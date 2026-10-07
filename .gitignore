@@ -1,0 +1,12 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Generated workflow output (decks, scripts, audio)
+*_narration/
+*.mp3
+*.pptx
+
+# macOS
+.DS_Store
