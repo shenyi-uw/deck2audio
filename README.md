@@ -37,3 +37,7 @@ Copy the LLM's whole answer and press **Enter**. The tool reads it from the clip
 `--voice`, `--rate` (e.g. `-5%`), `--pitch` (e.g. `+2Hz`), `--slide-gap 1.2`, `--pause 0.8`, `-o out.mp3`.
 Other good female voices: `en-US-EmmaMultilingualNeural`, `en-US-JennyNeural`, `en-US-AriaNeural`, `en-GB-SoniaNeural`, `en-AU-NatashaNeural`.
 TTS uses Microsoft Edge's online neural voices through `edge-tts`. It needs an internet connection but no API key.
+
+## License
+
+[MIT](LICENSE)
