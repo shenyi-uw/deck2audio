@@ -1,0 +1,133 @@
+:root {
+    --ahslab-navy: #070d1b;
+    --ahslab-blue: #394c7d;
+    --ahslab-cream: #f2f3c0;
+    --ahslab-gold: #efc563;
+}
+
+[data-testid="stAppViewContainer"] {
+    background:
+        radial-gradient(ellipse at 85% 5%, transparent 35%, rgba(239, 197, 99, 0.07) 36%, transparent 37%),
+        radial-gradient(ellipse at 10% 0%, transparent 45%, rgba(242, 243, 192, 0.05) 46%, transparent 47%),
+        linear-gradient(160deg, var(--ahslab-blue), var(--ahslab-navy) 65%);
+    background-attachment: fixed;
+}
+
+[data-testid="stHeader"] {
+    background: rgba(7, 13, 27, 0.92);
+}
+
+[data-testid="stSidebar"] {
+    background: var(--ahslab-navy);
+    border-right: 1px solid rgba(239, 197, 99, 0.3);
+}
+
+.ahslab-masthead {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    padding: 1.5rem 0;
+    margin-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(239, 197, 99, 0.45);
+}
+
+.ahslab-badge {
+    flex-shrink: 0;
+    display: grid;
+    place-content: center;
+    width: 5.5rem;
+    height: 5.5rem;
+    border: 1px solid rgba(239, 197, 99, 0.5);
+    border-radius: 1.8rem;
+    background: var(--ahslab-navy);
+    color: var(--ahslab-gold);
+    font-size: 0.9rem;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-align: center;
+    box-shadow: 0 0 3rem rgba(239, 197, 99, 0.18);
+}
+
+.ahslab-logo {
+    display: block;
+    width: 3.7rem;
+    height: auto;
+    object-fit: contain;
+}
+
+.ahslab-name {
+    margin: 0;
+    color: var(--ahslab-cream);
+    font-size: clamp(1.1rem, 2.5vw, 1.65rem);
+    font-weight: 600;
+}
+
+.ahslab-affiliation {
+    margin: 0.35rem 0 0;
+    color: var(--ahslab-gold);
+    font-size: 0.95rem;
+}
+
+[data-testid="stMainBlockContainer"] h1 {
+    color: var(--ahslab-gold);
+    font-weight: 800;
+    letter-spacing: -0.03em;
+}
+
+[data-testid="stMainBlockContainer"] h2,
+[data-testid="stMainBlockContainer"] h3,
+[data-testid="stSidebar"] h2 {
+    color: var(--ahslab-cream);
+}
+
+[data-testid="stCaptionContainer"] {
+    color: var(--ahslab-cream);
+}
+
+[data-testid="stForm"],
+[data-testid="stExpander"] {
+    border-color: rgba(239, 197, 99, 0.35);
+    border-radius: 1rem;
+    background: rgba(7, 13, 27, 0.35);
+}
+
+[data-testid="stButton"] button,
+[data-testid="stDownloadButton"] button,
+[data-testid="stFormSubmitButton"] button {
+    min-height: 2.75rem;
+    border-radius: 2rem;
+    border-color: rgba(239, 197, 99, 0.6);
+}
+
+[data-testid="stButton"] button:focus-visible,
+[data-testid="stDownloadButton"] button:focus-visible,
+[data-testid="stFormSubmitButton"] button:focus-visible {
+    outline: 3px solid var(--ahslab-gold);
+    outline-offset: 3px;
+}
+
+.ahslab-footer {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(239, 197, 99, 0.35);
+    color: var(--ahslab-cream);
+    font-size: 0.85rem;
+}
+
+@media (max-width: 640px) {
+    .ahslab-masthead {
+        gap: 1rem;
+        padding-top: 0.5rem;
+    }
+
+    .ahslab-badge {
+        width: 4rem;
+        height: 4rem;
+        border-radius: 1.25rem;
+        font-size: 0.7rem;
+    }
+
+    .ahslab-logo {
+        width: 2.8rem;
+    }
+}

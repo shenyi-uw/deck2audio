@@ -7,6 +7,7 @@ __pycache__/
 *_narration/
 *.mp3
 *.pptx
+ui_projects/
 
 # macOS
 .DS_Store

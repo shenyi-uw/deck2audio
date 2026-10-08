@@ -22,10 +22,15 @@ import sys
 import tempfile
 import textwrap
 from pathlib import Path
+from typing import Callable
 
 DEFAULT_VOICE = "en-US-AvaMultilingualNeural"
 WORDS_PER_MINUTE = 150
 SLIDE_HEADING = re.compile(r"^\s*#{1,6}\s*Slide\s+(\d+)\b.*$", re.IGNORECASE | re.MULTILINE)
+VOICE_PREVIEW_TEXT = (
+    "Hi there! I'm going to be your narrator today. "
+    "Grab a coffee, get comfortable, and let's dive into some genuinely fascinating ideas together."
+)
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -235,11 +240,16 @@ RESEARCH_PROMPTS = {
     "academic": """\
 You are a research assistant helping me prepare a narrated presentation.
 Below is the full content of my slide deck (slide text + speaker notes).
+Intended audience: {audience}. Adapt the explanation depth to this audience.
 
 TASK: Suggest academic grounding that would make the narration more insightful.
 For the slides where it genuinely adds value (not every slide), provide:
   • Key theories, frameworks, or seminal studies (author(s), year, venue)
   • One or two sentences on the core finding and HOW it connects to the slide
+  • For each specific study, the research team (including the lead researcher),
+    the institution at the time of the study, and the year of publication.
+    Verify these details; mark unknown details as "verify", never guess them.
+    Describe what the study actually found, its scope, and relevant limitations.
   • A short, quotable takeaway phrased for a spoken audience
 
 RULES:
@@ -247,12 +257,15 @@ RULES:
   • No fabricated statistics. Prefer well-known, verifiable work.
   • Organize your answer by "Slide N" headings so it maps back to the deck.
   • Keep it concise: at most ~3 items per slide.
+  • Recommend spoken source attribution only when describing a specific study's
+    finding, not to decorate a general statement with a researcher's name.
+    Do not assume the audience knows a researcher; introduce the team and institution.
 
 DECK:
 {deck}
 """,
     "examples": """\
-You are helping me make a presentation memorable for a general professional audience.
+You are helping me make a presentation memorable for {audience}.
 Below is the full content of my slide deck (slide text + speaker notes).
 
 TASK: For the slides where it fits, suggest vivid real-world examples, case studies,
@@ -264,8 +277,15 @@ analogies, or short stories that illustrate the point. For each:
 RULES:
   • Use real, verifiable events; flag anything uncertain with "verify".
   • Favor diverse industries and recent examples (last ~10 years) where possible.
+  • Choose examples relatable to this audience's experience, age, and knowledge.
+    Explain unfamiliar contexts without condescension. Label invented analogies
+    as hypothetical, never as actual events.
   • Organize your answer by "Slide N" headings.
   • At most ~2 examples per slide; skip slides where an example would feel forced.
+  • Plan examples across the ENTIRE presentation. Assign each example, case study,
+    story, or analogy to its best-fitting slide rather than suggesting it repeatedly.
+    If several slides share an idea, use distinct examples or explain it without
+    another example. Do not repeat an example already supplied in the deck.
 
 DECK:
 {deck}
@@ -273,21 +293,25 @@ DECK:
 }
 
 
-def research(proj: Path) -> None:
+def research_prompt(key: str, slides: list[dict], audience: str = "") -> str:
+    return RESEARCH_PROMPTS[key].format(
+        deck=slides_as_markdown(slides), audience=audience or "a general professional audience")
+
+
+def research(proj: Path, audience: str = "") -> None:
     slides = load_slides(proj)
     state = load_state(proj)
     rdir = proj / "research"
     rdir.mkdir(exist_ok=True)
-    deck_md = slides_as_markdown(slides)
     labels = {"academic": "Academic resources & theory", "examples": "Real-world examples & stories"}
 
-    for key, template in RESEARCH_PROMPTS.items():
+    for key in RESEARCH_PROMPTS:
         out = rdir / f"{key}.md"
         status = state.get("research", {}).get(key)
         if status in ("approved", "skipped"):
             if ask(f"'{labels[key]}' is already {status}. Redo it?", "ny") == "n":
                 continue
-        prompt = template.format(deck=deck_md)
+        prompt = research_prompt(key, slides, audience)
         (rdir / f"{key}.prompt.txt").write_text(prompt)
         result = human_in_the_loop(prompt, f"Step 2 · {labels[key]}")
         state.setdefault("research", {})[key] = "approved" if result else "skipped"
@@ -314,18 +338,73 @@ def approved_research(proj: Path) -> str:
 SCRIPT_PROMPT = """\
 You are an award-winning keynote speaker and speechwriter. Write the word-for-word
 NARRATION SCRIPT for a recorded audio presentation of the slide deck below.
-It will be read aloud by a warm, charismatic female text-to-speech voice{audience}.
+It will be read aloud by a text-to-speech narrator{audience}.
 
 TONE & STYLE
-  • Insightful, engaging, and personable — like a favorite professor who is also a great storyteller.
-  • Speak directly to the listener ("you", "we"). Use contractions and natural rhythm.
+  • Wise, charismatic, insightful, and personable — like a favorite teacher who is
+    also a great storyteller. Be engaging, not pompous or preachy.
+  • Use occasional gentle, appropriate humor where it fits; never force jokes,
+    mock people, trivialize sensitive topics, or distract from the message.
+  • Adapt vocabulary, explanation depth, and real-world examples to the intended
+    audience's age, knowledge, and everyday experience without condescension.
+  • Sound like a personable one-person podcast, not a formal lecture or a panel.
+    Address one listener as "you" and use "I" naturally as the narrator
+    (e.g., "I want to show you..." or "Here's how I'd think about it").
+    Use "we" when it genuinely invites shared thinking, not as a substitute for
+    direct conversation. Use contractions, natural rhythm, brief reflective
+    questions, and warm transitions without mechanically repeating verbal hooks.
+    Do not invent personal experiences, credentials, or anecdotes for the narrator.
   • Open with a hook (a question, surprising fact, or short story){intro_note}.
   • Don't just read the bullets — explain WHY they matter, connect ideas, and add insight.
   • Weave in the approved academic sources and real-world examples where they genuinely
-    strengthen a point. Cite sources conversationally (e.g., "As Daniel Kahneman showed in 2011…").
+    strengthen a point; follow the spoken-source rules below, not name-dropping.
+  • Add concise, relatable real-world examples where helpful even if no separate
+    examples research was supplied. Use verifiable events or clearly hypothetical
+    analogies; do not fabricate case studies, names, dates, or statistics.
+  • Avoid repeated examples across the ENTIRE presentation, including earlier batches.
+    Use each case study, story, or analogy once, on the slide where it helps most.
+    Check the accepted earlier narration below before introducing an example.
+    A brief, clearly signposted callback is fine only if it adds a new connection;
+    do not retell the example or present it as new. In the closing summary, recap
+    takeaways rather than telling the same examples again.
   • Smooth spoken transitions between slides. {outro_note}
   • Target roughly {wpm_low}–{wpm_high} words per slide on average, more for dense slides,
     less for title/section slides.{duration_note}
+
+SPOKEN SOURCES & STUDIES
+  • Make reference to a source only when describing a specific study's finding,
+    explaining what was studied and found and why that finding matters here.
+    Do not attach a researcher's name to an ordinary statement, broad idea, or
+    opinion. Do not assume the listener recognizes researchers' names.
+  • When describing a specific study, introduce the research team (including the
+    lead researcher), the institution at the time of the study, and the year of
+    publication in a concise, conversational sentence alongside the finding.
+    Verify the attribution, institution, year, and finding; never invent these
+    details or infer an institution from a researcher's current affiliation.
+  • If these study details cannot be verified, omit that specific study reference.
+    Only retain a general explanation if it is independently supportable and
+    carefully worded; otherwise omit the unsupported claim as well.
+  • The exception for mentioning a person outside a study is a commonly known
+    public or historical figure when genuinely relevant to the message. This
+    is not permission to name-drop, fabricate quotations, or substitute fame
+    for evidence. Avoid academic roll calls and unexplained "according to" lines.
+
+FACT-CHECKING & FAITHFULNESS
+  • Fact-check claims in the existing slide text AND speaker notes before drafting.
+    Check dates, statistics, attributions, causal claims, and sweeping generalizations
+    against reliable sources when you have source access. Approved research is not
+    automatically proof; check its claims too.
+  • Do not pretend to have verified anything you cannot verify. If source access
+    is unavailable or evidence is uncertain, omit unsupported specifics or use
+    appropriately cautious wording; never invent sources or certainty.
+  • Avoid over-claiming: distinguish evidence from opinion, correlation from
+    causation, and possibilities from established results. Preserve important caveats.
+  • The goal is to promote the deck's original message with appropriate clarifications
+    and careful wording, NOT to critique or review the deck. Do not repeat known false
+    claims; correct or reframe them naturally without attacking the author or adding
+    a critique section. Do not endorse a false premise merely to preserve the message.
+  • Output only the spoken script, not a fact-check report. Human verification is
+    still required for consequential claims; do not describe this draft as certified.
 
 FORMAT — THIS IS PARSED BY A PROGRAM, FOLLOW EXACTLY
   • One section per slide, in order, each starting with a heading line exactly like:
@@ -339,6 +418,7 @@ FORMAT — THIS IS PARSED BY A PROGRAM, FOLLOW EXACTLY
   • Do not add any text before the first heading or after the last section.
 {continuity}
 {research}
+{summary_context}
 
 === SLIDE DECK{batch_note} ===
 {deck}
@@ -352,6 +432,83 @@ def parse_script(text: str) -> dict[int, str]:
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         sections[int(m.group(1))] = text[m.end():end].strip()
     return sections
+
+
+def validate_script(text: str, expected: set[int]) -> list[str]:
+    got = parse_script(text)
+    problems: list[str] = []
+    if missing := sorted(expected - got.keys()):
+        problems.append(f"Missing sections for slides: {missing}")
+    if extra := sorted(got.keys() - expected):
+        problems.append(f"Unexpected slide numbers: {extra}")
+    if empty := sorted(k for k, v in got.items() if k in expected
+                       and not re.sub(r"\[pause\]", "", clean_for_speech(v), flags=re.I).strip()):
+        problems.append(f"Empty sections: {empty}")
+    numbers = [int(m.group(1)) for m in SLIDE_HEADING.finditer(text)]
+    if len(numbers) != len(set(numbers)):
+        problems.append("Duplicate slide headings.")
+    if numbers != sorted(numbers):
+        problems.append("Slide sections must be in deck order.")
+    if matches := list(SLIDE_HEADING.finditer(text)):
+        if text[:matches[0].start()].strip():
+            problems.append("Remove text before the first slide heading.")
+    return problems
+
+
+def format_script(slides: list[dict], sections: dict[int, str]) -> str:
+    return "\n\n".join(
+        f"## Slide {s['number']}: {s['title'] or ''}".rstrip(": ") + f"\n\n{sections.get(s['number'], '')}"
+        for s in slides)
+
+
+def script_prompt(slides: list[dict], batch_size: int, batch_index: int, audience: str,
+                  minutes: float | None, sections: dict[int, str], research_text: str) -> str:
+    if not slides or batch_size < 1:
+        raise ValueError("Script drafting requires slides and a positive batch size.")
+    if minutes is not None and minutes <= 0:
+        raise ValueError("Target duration must be positive.")
+    batches = [slides[i:i + batch_size] for i in range(0, len(slides), batch_size)]
+    if not 0 <= batch_index < len(batches):
+        raise ValueError("Script batch index is out of range.")
+    batch = batches[batch_index]
+    first, last = batch[0]["number"], batch[-1]["number"]
+    is_first, is_last = batch_index == 0, batch_index == len(batches) - 1
+    total_words = int(minutes * WORDS_PER_MINUTE) if minutes else None
+    per_slide = (total_words // len(slides)) if total_words else 110
+    continuity = ""
+    if not is_first:
+        prev_num = slides[batch_index * batch_size - 1]["number"]
+        prior_slides = [s for s in slides[:batch_index * batch_size] if s["number"] in sections]
+        continuity = (
+            f"\nCONTINUITY: This is part {batch_index + 1} of {len(batches)}. The narration so far ended "
+            f"with slide {prev_num}:\n\"\"\"\n{sections.get(prev_num, '')[-1200:]}\n\"\"\"\n"
+            "Continue seamlessly — do NOT re-introduce the talk or greet the listener again.\n"
+            "\n=== ACCEPTED EARLIER NARRATION (reference only; do not rewrite or repeat) ===\n"
+            "Check ALL earlier sections for examples already used and for continuity. "
+            "Use different examples in this batch, or no example where none is needed.\n"
+            f"{format_script(prior_slides, sections)}\n"
+        )
+    return SCRIPT_PROMPT.format(
+        audience=f" for {audience or 'a general professional audience'}",
+        intro_note=" and briefly preview the journey" if is_first else " — only in part 1; this is a continuation",
+        outro_note=(
+            "At the END of the LAST slide's narration, summarize the ENTIRE presentation's "
+            "key ideas and takeaways, whether or not the deck contains a summary slide. "
+            "Include earlier slides, not just this batch. Finish with a memorable close and "
+            "an appropriate call to action. Keep the summary inside the last slide's section; "
+            "do not add a new slide or text outside the slide sections."
+            if is_last else "Do NOT conclude or summarize the whole talk yet; more slides follow this batch."),
+        wpm_low=max(40, per_slide - 30), wpm_high=per_slide + 40,
+        duration_note=(f" The full talk should run about {minutes:g} minutes (~{total_words} words)."
+                       if minutes else ""),
+        first=first, last=last, continuity=continuity,
+        research=("\n" + research_text) if research_text else "",
+        summary_context=(
+            "\n=== FULL DECK CONTEXT FOR THE CLOSING SUMMARY (reference only; narrate ONLY this batch) ===\n"
+            + slides_as_markdown(slides) if is_last and len(batches) > 1 else ""),
+        batch_note=f" (slides {first}–{last} of {len(slides)})" if len(batches) > 1 else "",
+        deck=slides_as_markdown(batch),
+    )
 
 
 def choose_skip_all() -> bool:
@@ -390,50 +547,20 @@ def script(proj: Path, batch_size: int, audience: str, minutes: float | None,
         return
 
     research_text = approved_research(proj)
+    if batch_size < 1:
+        sys.exit("Slides per script prompt must be at least one.")
     n = len(slides)
     batches = [slides[i:i + batch_size] for i in range(0, n, batch_size)]
-    total_words = int(minutes * WORDS_PER_MINUTE) if minutes else None
-    per_slide = (total_words // n) if total_words else 110
     sections: dict[int, str] = {}
 
     for bi, batch in enumerate(batches):
         first, last = batch[0]["number"], batch[-1]["number"]
-        is_first, is_last = bi == 0, bi == len(batches) - 1
-        continuity = ""
-        if not is_first:
-            prev_num = first - 1
-            continuity = (
-                f"\nCONTINUITY: This is part {bi + 1} of {len(batches)}. The narration so far ended "
-                f"with slide {prev_num}:\n\"\"\"\n{sections.get(prev_num, '')[-1200:]}\n\"\"\"\n"
-                "Continue seamlessly — do NOT re-introduce the talk or greet the listener again.\n"
-            )
-        prompt = SCRIPT_PROMPT.format(
-            audience=f" to {audience}" if audience else "",
-            intro_note=" and briefly preview the journey" if is_first else " — only in part 1; this is a continuation",
-            outro_note=("End with a memorable close: recap the big ideas and a call to action."
-                        if is_last else "Do NOT conclude the talk; more slides follow this batch."),
-            wpm_low=max(40, per_slide - 30), wpm_high=per_slide + 40,
-            duration_note=(f" The full talk should run about {minutes:g} minutes (~{total_words} words)."
-                           if minutes else ""),
-            first=first, last=last,
-            continuity=continuity,
-            research=("\n" + research_text) if research_text else "",
-            batch_note=f" (slides {first}–{last} of {n})" if len(batches) > 1 else "",
-            deck=slides_as_markdown(batch),
-        )
+        prompt = script_prompt(slides, batch_size, bi, audience, minutes, sections, research_text)
         (proj / f"script_prompt_{bi + 1}.txt").write_text(prompt)
-        expected = set(range(first, last + 1))
+        expected = {s["number"] for s in batch}
 
         def validate(text: str, expected=expected) -> list[str]:
-            got = parse_script(text)
-            problems = []
-            if missing := sorted(expected - got.keys()):
-                problems.append(f"Missing sections for slides: {missing}")
-            if extra := sorted(got.keys() - expected):
-                problems.append(f"Unexpected slide numbers: {extra}")
-            if empty := sorted(k for k, v in got.items() if k in expected and not v):
-                problems.append(f"Empty sections: {empty}")
-            return problems
+            return validate_script(text, expected)
 
         label = f"Step 3 · Narration script" + (f" — part {bi + 1}/{len(batches)} (slides {first}–{last})"
                                                  if len(batches) > 1 else "")
@@ -447,8 +574,7 @@ def script(proj: Path, batch_size: int, audience: str, minutes: float | None,
 
 
 def approve_script(proj: Path, slides: list[dict], sections: dict[int, str]) -> None:
-    full = "\n\n".join(f"## Slide {s['number']}: {s['title'] or ''}".rstrip(": ") + f"\n\n{sections.get(s['number'], '')}"
-                       for s in slides)
+    full = format_script(slides, sections)
     words = len(full.split())
     banner("Final review — full narration script")
     print(full)
@@ -549,12 +675,22 @@ async def tts_async(proj: Path, voice: str, rate: str, pitch: str, slide_gap: fl
     if ask("Generate the audio now?", "yn") == "n":
         return
 
+    await generate_audio(proj, sections, voice, rate, pitch, slide_gap, pause_len, output)
+
+
+async def generate_audio(proj: Path, sections: dict[int, str], voice: str, rate: str, pitch: str,
+                         slide_gap: float, pause_len: float, output: Path,
+                         progress: Callable[[int, int], None] | None = None) -> None:
+    if not sections or any(not re.sub(r"\[pause\]", "", clean_for_speech(text), flags=re.I).strip()
+                           for text in sections.values()):
+        raise ValueError("Every slide must have spoken text before generating audio.")
+    if slide_gap < 0 or pause_len < 0:
+        raise ValueError("Slide gaps and pauses cannot be negative.")
     adir = proj / "audio"
     adir.mkdir(exist_ok=True)
     pieces: list[bytes] = []
     header = None
-    pending_silence = 0.0
-    for num in sorted(sections):
+    for index, num in enumerate(sorted(sections), 1):
         text = clean_for_speech(sections[num])
         segments = [s.strip() for s in re.split(r"\[pause\]", text, flags=re.I)]
         slide_audio: list[bytes] = []
@@ -564,16 +700,19 @@ async def tts_async(proj: Path, voice: str, rate: str, pitch: str, slide_gap: fl
                 audio = await synth_chunk(seg, voice, rate, pitch)
                 header = header or audio[:4]
                 slide_audio.append(audio)
-            if si < len(segments) - 1 and header:
+            if si < len(segments) - 1 and header and pause_len > 0:
                 slide_audio.append(silent_mp3(pause_len, header))
         blob = b"".join(slide_audio)
         (adir / f"slide_{num:03d}.mp3").write_bytes(blob)
         if pieces and header and slide_gap > 0:
             pieces.append(silent_mp3(slide_gap, header))
         pieces.append(blob)
+        if progress:
+            progress(index, len(sections))
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(b"".join(pieces))
+    state = load_state(proj)
     state["audio"] = str(output)
     save_state(proj, state)
     print(f"\n✓ Narrated presentation → {output}")
@@ -586,9 +725,7 @@ def tts(proj: Path, args) -> None:
 
 
 async def preview_voice(voice: str, rate: str, pitch: str, out: Path) -> None:
-    text = ("Hi there! I'm going to be your narrator today. "
-            "Grab a coffee, get comfortable, and let's dive into some genuinely fascinating ideas together.")
-    out.write_bytes(await synth_chunk(text, voice, rate, pitch))
+    out.write_bytes(await synth_chunk(VOICE_PREVIEW_TEXT, voice, rate, pitch))
     print(f"✓ Voice sample → {out}")
     if shutil.which("afplay"):
         subprocess.call(["afplay", str(out)])
@@ -599,6 +736,7 @@ async def preview_voice(voice: str, rate: str, pitch: str, out: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("ui", help="open the local browser interface")
 
     def add_tts_opts(p):
         p.add_argument("--voice", default=DEFAULT_VOICE,
@@ -624,6 +762,7 @@ def main() -> None:
 
     p = sub.add_parser("extract", help="stage 1: extract slide text + notes"); add_proj(p)
     p = sub.add_parser("research", help="stage 2: academic + real-world enrichment"); add_proj(p)
+    p.add_argument("--audience", default="")
     p = sub.add_parser("script", help="stage 3: draft and approve the narration script"); add_proj(p)
     p.add_argument("--audience", default="")
     p.add_argument("--minutes", type=float)
@@ -640,6 +779,12 @@ def main() -> None:
     p.add_argument("-o", "--output", default="voice_sample.mp3")
 
     args = ap.parse_args()
+    if args.cmd == "ui":
+        raise SystemExit(subprocess.call([
+            sys.executable, "-m", "streamlit", "run", str(Path(__file__).with_name("deck2audio_ui.py")),
+            "--server.address", "127.0.0.1", "--server.headless", "true",
+            "--browser.gatherUsageStats", "false",
+        ], cwd=Path(__file__).resolve().parent))
     if args.cmd == "voice-test":
         asyncio.run(preview_voice(args.voice, args.rate, args.pitch, Path(args.output)))
         return
@@ -662,7 +807,7 @@ def main() -> None:
         if args.cmd == "run" and not skip_all:
             skip_all = choose_skip_all()
         if args.cmd == "research" or (args.cmd == "run" and not skip_all):
-            research(proj)
+            research(proj, args.audience)
         if args.cmd in ("script", "run"):
             script(proj, args.batch_size, args.audience, args.minutes,
                    skip_all=skip_all if args.cmd == "run" or skip_all else None)
