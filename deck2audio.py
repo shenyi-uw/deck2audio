@@ -4,7 +4,7 @@
 Stages (each resumable; state lives in the project folder):
   1. extract   Pull slide text + speaker notes from a .pptx
   2. research  Generate LLM prompts for academic sources & real-world examples; you paste back + approve
-  3. script    Generate LLM prompt(s) to draft the spoken script; you paste back + approve
+  3. script    Draft with an LLM or use deck content directly; review + approve
   4. tts       Synthesize the approved script with a neural female voice and export an MP3
 
 Run everything:  python deck2audio.py run deck.pptx
@@ -354,13 +354,40 @@ def parse_script(text: str) -> dict[int, str]:
     return sections
 
 
-def script(proj: Path, batch_size: int, audience: str, minutes: float | None) -> None:
+def choose_skip_all() -> bool:
+    return ask("Draft with an [L]LM, or [S]kip all research and LLM prompts and use deck content?", "ls") == "s"
+
+
+def deck_script_sections(slides: list[dict]) -> dict[int, str]:
+    sections: dict[int, str] = {}
+    for slide in slides:
+        notes = clean_for_speech(slide["notes"])
+        text = notes or clean_for_speech("\n\n".join([slide["title"], *slide["body"]]))
+        if not text:
+            sys.exit(f"Slide {slide['number']} has no usable text or speaker notes. Add speaker notes before drafting.")
+        sections[slide["number"]] = text
+    return sections
+
+
+def script(proj: Path, batch_size: int, audience: str, minutes: float | None,
+           skip_all: bool | None = None) -> None:
     slides = load_slides(proj)
     state = load_state(proj)
     script_file = proj / "script.md"
     if state.get("script") == "approved" and script_file.exists():
         if ask("An approved script already exists. Redo it?", "ny") == "n":
             return
+
+    if not slides:
+        sys.exit("No slides found. Extract a deck with slides before drafting.")
+    if skip_all is None:
+        skip_all = choose_skip_all()
+    if skip_all:
+        print("Using speaker notes, falling back to slide titles and text. No research or LLM prompts.")
+        if audience or minutes:
+            print("Audience and target duration apply only to LLM drafting; deck content is used as-is.")
+        approve_script(proj, slides, deck_script_sections(slides))
+        return
 
     research_text = approved_research(proj)
     n = len(slides)
@@ -416,6 +443,10 @@ def script(proj: Path, batch_size: int, audience: str, minutes: float | None) ->
             return
         sections.update({k: v for k, v in parse_script(result).items() if k in expected})
 
+    approve_script(proj, slides, sections)
+
+
+def approve_script(proj: Path, slides: list[dict], sections: dict[int, str]) -> None:
     full = "\n\n".join(f"## Slide {s['number']}: {s['title'] or ''}".rstrip(": ") + f"\n\n{sections.get(s['number'], '')}"
                        for s in slides)
     words = len(full.split())
@@ -433,8 +464,13 @@ def script(proj: Path, batch_size: int, audience: str, minutes: float | None) ->
         else:
             print("Not approved; draft saved to script.draft.md")
             (proj / "script.draft.md").write_text(full)
+            state = load_state(proj)
+            state["script"] = "draft"
+            save_state(proj, state)
             return
+    script_file = proj / "script.md"
     script_file.write_text(full)
+    state = load_state(proj)
     state["script"] = "approved"
     save_state(proj, state)
     print(f"✓ Approved script saved → {script_file}  (you can still hand-edit it before TTS)")
@@ -480,6 +516,8 @@ async def synth_chunk(text: str, voice: str, rate: str, pitch: str, retries: int
             buf = bytearray()
             async for chunk in edge_tts.Communicate(text, voice, rate=rate, pitch=pitch).stream():
                 if chunk["type"] == "audio":
+                    if "data" not in chunk:
+                        raise RuntimeError("TTS audio chunk is missing data")
                     buf.extend(chunk["data"])
             if buf:
                 return bytes(buf)
@@ -577,6 +615,8 @@ def main() -> None:
     p.add_argument("--audience", default="", help='e.g. "graduate students in public health"')
     p.add_argument("--minutes", type=float, help="target talk length in minutes")
     p.add_argument("--batch-size", type=int, default=15, help="slides per script prompt (large decks)")
+    p.add_argument("--skip-all", action="store_true",
+                   help="skip research and LLM drafting; use deck content and keep final script approval")
     p.add_argument("--slide-gap", type=float, default=1.2, help="seconds of silence between slides")
     p.add_argument("--pause", type=float, default=0.8, help="seconds for each [pause] marker")
     p.add_argument("-o", "--output", help="output MP3 path")
@@ -588,6 +628,8 @@ def main() -> None:
     p.add_argument("--audience", default="")
     p.add_argument("--minutes", type=float)
     p.add_argument("--batch-size", type=int, default=15)
+    p.add_argument("--skip-all", action="store_true",
+                   help="skip LLM drafting and saved research; use deck content and keep final approval")
     p = sub.add_parser("tts", help="stage 4: synthesize MP3 from script.md"); add_proj(p)
     p.add_argument("--slide-gap", type=float, default=1.2)
     p.add_argument("--pause", type=float, default=0.8)
@@ -616,10 +658,14 @@ def main() -> None:
             if target.suffix.lower() != ".pptx":
                 sys.exit("Pass the .pptx file to extract.")
             extract(target, proj)
-        if args.cmd in ("research", "run"):
+        skip_all = args.skip_all if args.cmd in ("script", "run") else False
+        if args.cmd == "run" and not skip_all:
+            skip_all = choose_skip_all()
+        if args.cmd == "research" or (args.cmd == "run" and not skip_all):
             research(proj)
         if args.cmd in ("script", "run"):
-            script(proj, args.batch_size, args.audience, args.minutes)
+            script(proj, args.batch_size, args.audience, args.minutes,
+                   skip_all=skip_all if args.cmd == "run" or skip_all else None)
         if args.cmd in ("tts", "run"):
             if args.cmd == "run" and load_state(proj).get("script") != "approved":
                 print("Script not approved yet — stopping before audio. Re-run to continue.")

@@ -15,6 +15,9 @@ python3 -m venv .venv
 # Full workflow (resumable — re-run the same command to continue)
 .venv/bin/python deck2audio.py run ~/Desktop/MyTalk.pptx --audience "MBA students" --minutes 15
 
+# Skip all research and LLM prompts; still review and approve the script
+.venv/bin/python deck2audio.py run ~/Desktop/MyTalk.pptx --skip-all
+
 # Audition voices first
 .venv/bin/python deck2audio.py voice-test
 .venv/bin/python deck2audio.py voice-test --voice en-US-EmmaMultilingualNeural --rate -5%
@@ -29,6 +32,19 @@ python3 -m venv .venv
 | 4. TTS | `tts deck.pptx` | Text is cleaned for speech and synthesized with `en-US-AvaMultilingualNeural`, and `[pause]` markers and slide gaps become silence. You get one combined MP3 plus one MP3 per slide. |
 
 Output lives in `<deck>_narration/` next to the deck. You can hand-edit `script.md` at any time and re-run `tts`.
+
+### Skip all research and LLM prompts
+At the beginning of `run`, or when drafting with `script`, choose **S** to skip all
+research and LLM prompts. You can also pass `--skip-all` to either command.
+The script uses each slide's speaker notes when available, otherwise its title
+and body text, cleaned for speech. Saved research is ignored but not deleted.
+Slides without usable text or notes must have speaker notes added first.
+
+This is a direct deck-content script, not an LLM rewrite: `--audience`,
+`--minutes`, and `--batch-size` do not alter it. You still get the final
+**Approve / Edit / Cancel** review before audio production. Cancelling saves
+an unapproved draft and stops a new full workflow before TTS. Script generation
+needs no LLM or outside resources; TTS still requires an internet connection.
 
 ### Pasting responses
 Copy the LLM's whole answer and press **Enter**. The tool reads it from the clipboard, which avoids terminal limits on pasting long lines. You can also choose `e` (your editor), `p` (paste then `END`), or `f` (a file).
