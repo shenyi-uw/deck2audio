@@ -151,5 +151,9 @@ def is_approved(proj: Path, text: str) -> bool:
     return core.load_state(proj).get("script") == "approved" and path.exists() and path.read_text() == text
 
 
-def audio_signature(text: str, voice: str, rate: str, pitch: str, gap: float, pause: float) -> str:
-    return hashlib.sha256(repr((text, voice, rate, pitch, gap, pause)).encode()).hexdigest()
+def audio_signature(text: str, voice: str, rate: str, pitch: str, gap: float, pause: float,
+                    *, backend: str = "edge") -> str:
+    settings = (text, voice, rate, pitch, gap, pause)
+    if backend != "edge":
+        settings += (backend,)
+    return hashlib.sha256(repr(settings).encode()).hexdigest()

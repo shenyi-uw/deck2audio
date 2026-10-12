@@ -4,7 +4,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import aiohttp
 
 from pptx import Presentation
 from pptx.shapes.autoshape import Shape
@@ -232,6 +234,8 @@ class BrowserWorkflowTests(ProjectTestCase):
             changed = args.copy()
             changed[index] = replacement
             self.assertNotEqual(signature, workflow.audio_signature(*changed))
+        self.assertEqual(signature, workflow.audio_signature(*args, backend="edge"))
+        self.assertNotEqual(signature, workflow.audio_signature(*args, backend="macos"))
 
     def test_shared_audio_generation_is_noninteractive_and_zero_pause_is_zero(self):
         audio = b"\xff\xf3\x80\xc4test"
@@ -366,6 +370,19 @@ class BrowserInterfaceTests(ProjectTestCase):
         self.assertEqual(list(app.exception), [])
         self.assertTrue(any("Network unavailable" in error.value for error in app.error))
 
+    def test_online_403_suggests_local_fallback_without_switching(self):
+        with patch("macos_tts.available", return_value=True):
+            app = self.app()
+            error = aiohttp.WSServerHandshakeError(
+                MagicMock(real_url="https://speech.platform.bing.com"), (), status=403,
+                message="Invalid response status")
+            with patch("deck2audio.synth_chunk", new=AsyncMock(side_effect=error)):
+                self.button(app, "Preview voice (online)").click().run()
+        self.assertEqual(list(app.exception), [])
+        self.assertTrue(any("403" in item.value for item in app.error))
+        self.assertTrue(any("emergency fallback" in item.value for item in app.info))
+        self.assertEqual(core.load_state(self.proj)["ui_voice"]["backend"], "edge")
+
     def test_failed_regeneration_hides_previous_audio(self):
         workflow.start_pipeline(self.proj, workflow.PipelineConfig(skip_llm=True))
         text = (self.proj / "script.draft.md").read_text()
@@ -386,6 +403,45 @@ class BrowserInterfaceTests(ProjectTestCase):
         next(slider for slider in app.slider if slider.label == "Speaking rate (%)").set_value(10).run()
         resumed = self.app()
         self.assertEqual(next(slider for slider in resumed.slider if slider.label == "Speaking rate (%)").value, 10)
+
+    def test_macos_fallback_is_explicit_persisted_and_requires_approval(self):
+        workflow.start_pipeline(self.proj, workflow.PipelineConfig(skip_llm=True))
+        with patch("macos_tts.available", return_value=True), \
+                patch("macos_tts.list_voices", return_value={"Samantha": "en_US"}):
+            app = self.app()
+            backend = next(box for box in app.selectbox if box.label == "Speech backend")
+            self.assertEqual(backend.value, "Edge voices (online)")
+            backend.select("macOS voices (offline fallback)").run()
+            self.assertEqual(list(app.exception), [])
+            self.assertTrue(self.button(app, "Generate MP3 (offline)").disabled)
+            self.assertNotIn("Pitch adjustment (Hz)", [slider.label for slider in app.slider])
+            next(box for box in app.selectbox if box.label == "Installed macOS voice").select("Samantha").run()
+            with patch("deck2audio.synth_chunk", new=AsyncMock(return_value=b"mp3")) as preview:
+                self.button(app, "Preview voice (offline)").click().run()
+            preview.assert_awaited_once_with(core.VOICE_PREVIEW_TEXT, "Samantha", "+0%", "+0Hz", backend="macos")
+            self.button(app, "Approve script for audio").click().run()
+            with patch("macos_tts.validate_settings"), \
+                    patch("macos_tts.synth_pcm", new=AsyncMock(return_value=b"\x01\x00" * 12)), \
+                    patch("macos_tts.encode_mp3", return_value=b"mp3"), \
+                    patch("deck2audio.synth_chunk", side_effect=AssertionError("Edge called")):
+                self.button(app, "Generate MP3 (offline)").click().run()
+            self.assertEqual(list(app.exception), [])
+            state = core.load_state(self.proj)
+            self.assertEqual(state["ui_voice"]["backend"], "macos")
+            self.assertEqual(state["ui_voice"]["macos_voice"], "Samantha")
+            self.assertEqual(state["audio_source"], workflow.audio_signature(
+                (self.proj / "script.md").read_text(), "Samantha", "+0%", "+0Hz", 1.2, 0.8, backend="macos"))
+            resumed = self.app()
+            self.assertEqual(next(box for box in resumed.selectbox if box.label == "Speech backend").value,
+                             "macOS voices (offline fallback)")
+            next(box for box in app.selectbox if box.label == "Speech backend").select("Edge voices (online)").run()
+            self.assertTrue(any("settings changed" in info.value for info in app.info))
+
+    def test_non_macos_only_offers_edge(self):
+        with patch("macos_tts.available", return_value=False):
+            app = self.app()
+        backend = next(box for box in app.selectbox if box.label == "Speech backend")
+        self.assertEqual(list(backend.options), ["Edge voices (online)"])
 
 
 if __name__ == "__main__":

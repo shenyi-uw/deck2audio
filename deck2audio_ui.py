@@ -14,6 +14,7 @@ from pptx.exc import PackageNotFoundError
 
 import browser_workflow as workflow
 import deck2audio as core
+import macos_tts
 
 PROJECT_ROOT = Path(__file__).resolve().parent / "ui_projects"
 AUDIENCES = {
@@ -38,6 +39,9 @@ VOICES = {
 
 def report_error(exc: BaseException) -> None:
     st.error(f"{type(exc).__name__}: {exc}")
+    if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status == 403 and macos_tts.available():
+        st.info("The online speech service rejected the request. For an emergency fallback, "
+                "select 'macOS voices (offline fallback)' under Voice & pacing.")
 
 
 def lab_branding() -> None:
@@ -182,45 +186,80 @@ def drafting_step(proj: Path, revision: str) -> None:
             report_error(exc)
 
 
-def voice_controls(proj: Path) -> tuple[str, str, str, float, float]:
+@st.cache_data(ttl=60)
+def installed_macos_voices() -> dict[str, str]:
+    return macos_tts.list_voices()
+
+
+def voice_controls(proj: Path) -> tuple[str, str, str, float, float, str]:
     saved = core.load_state(proj).get("ui_voice", {})
     with st.sidebar:
         st.header("Voice & pacing")
         st.caption("Preset names indicate voice and accent, not guaranteed personality. "
                    "Charisma and humor come from the script.")
+        backends = {"Edge voices (online)": "edge"}
+        if macos_tts.available():
+            backends["macOS voices (offline fallback)"] = "macos"
+        backend_names = list(backends)
+        backend_index = next((i for i, name in enumerate(backend_names)
+                              if backends[name] == saved.get("backend", "edge")), 0)
+        backend = backends[st.selectbox("Speech backend", backend_names, index=backend_index,
+                                       key=f"backend_{proj}")]
         names = list(VOICES)
-        index = names.index(saved["selection"]) if saved.get("selection") in names else 0
-        selection = st.selectbox("Narrator voice", names, index=index, key=f"voice_{proj}")
+        selection = saved.get("selection", names[0])
         custom_default: str = saved.get("custom", "")
-        custom = st.text_input("Custom edge-tts voice ID (optional)", value=custom_default,
-                               key=f"custom_voice_{proj}")
-        voice = custom.strip() or VOICES[selection]
+        custom = custom_default
+        macos_voice = saved.get("macos_voice", "")
+        if backend == "edge":
+            index = names.index(selection) if selection in names else 0
+            selection = st.selectbox("Narrator voice", names, index=index, key=f"voice_{proj}")
+            custom = st.text_input("Custom edge-tts voice ID (optional)", value=custom_default,
+                                   key=f"custom_voice_{proj}")
+            voice = custom.strip() or VOICES[selection]
+        else:
+            voices = {"": "System default", **installed_macos_voices()}
+            local_names = list(voices)
+            index = local_names.index(macos_voice) if macos_voice in voices else 0
+            macos_voice = st.selectbox(
+                "Installed macOS voice", local_names, index=index, key=f"macos_voice_{proj}",
+                format_func=lambda name: f"{name} ({voices[name]})" if name else voices[name])
+            voice = macos_voice
         rate_value = st.slider("Speaking rate (%)", -50, 50, saved.get("rate", 0), key=f"rate_{proj}")
-        pitch_value = st.slider("Pitch adjustment (Hz)", -20, 20, saved.get("pitch", 0), key=f"pitch_{proj}")
+        pitch_value = saved.get("pitch", 0)
+        if backend == "edge":
+            pitch_value = st.slider("Pitch adjustment (Hz)", -20, 20, pitch_value, key=f"pitch_{proj}")
+        else:
+            st.caption("Pitch adjustment is unavailable for macOS voices. "
+                       "Normal speed uses 175 words per minute; the rate slider adjusts that speed.")
         gap = st.slider("Silence between slides (seconds)", 0.0, 5.0, saved.get("gap", 1.2), 0.1, key=f"gap_{proj}")
         pause = st.slider("[pause] length (seconds)", 0.0, 3.0, saved.get("pause", 0.8), 0.1, key=f"pause_{proj}")
-        rate, pitch = f"{rate_value:+d}%", f"{pitch_value:+d}Hz"
-        st.caption("Voice preview and MP3 generation need internet and send spoken text to Microsoft's TTS service.")
-        if st.button("Preview voice (online)"):
+        rate, pitch = f"{rate_value:+d}%", f"{pitch_value:+d}Hz" if backend == "edge" else "+0Hz"
+        if backend == "edge":
+            st.caption("Voice preview and MP3 generation need internet and send spoken text to Microsoft's TTS service.")
+        else:
+            st.caption("Emergency fallback: synthesis uses installed macOS voices locally. "
+                       "No narration is sent to Microsoft's TTS service. Voices sound different from Edge.")
+        if st.button("Preview voice (online)" if backend == "edge" else "Preview voice (offline)"):
             try:
                 with st.spinner("Generating voice sample..."):
-                    sample = asyncio.run(core.synth_chunk(core.VOICE_PREVIEW_TEXT, voice, rate, pitch))
-                st.session_state[f"sample_{proj}"] = ((voice, rate, pitch), sample)
+                    sample = asyncio.run(core.synth_chunk(core.VOICE_PREVIEW_TEXT, voice, rate, pitch,
+                                                         backend=backend))
+                st.session_state[f"sample_{proj}"] = ((backend, voice, rate, pitch), sample)
             except (aiohttp.ClientError, EdgeTTSException, OSError, RuntimeError, ValueError) as exc:
                 report_error(exc)
         sample = st.session_state.get(f"sample_{proj}")
-        if sample and sample[0] == (voice, rate, pitch):
+        if sample and sample[0] == (backend, voice, rate, pitch):
             st.audio(sample[1], format="audio/mp3")
     values = {"selection": selection, "custom": custom, "rate": rate_value, "pitch": pitch_value,
-              "gap": gap, "pause": pause}
+              "gap": gap, "pause": pause, "backend": backend, "macos_voice": macos_voice}
     if saved != values:
         state = core.load_state(proj)
         state["ui_voice"] = values
         core.save_state(proj, state)
-    return voice, rate, pitch, gap, pause
+    return voice, rate, pitch, gap, pause, backend
 
 
-def review_step(proj: Path, revision: str, voice_settings: tuple[str, str, str, float, float]) -> None:
+def review_step(proj: Path, revision: str, voice_settings: tuple[str, str, str, float, float, str]) -> None:
     st.subheader("4. Final script review")
     state = core.load_state(proj)
     source = proj / ("script.md" if state.get("script") == "approved" else "script.draft.md")
@@ -252,9 +291,9 @@ def review_step(proj: Path, revision: str, voice_settings: tuple[str, str, str, 
         st.success("This script is approved.")
 
     st.subheader("5. Generate and listen")
-    voice, rate, pitch, gap, pause = voice_settings
-    signature = workflow.audio_signature(text, voice, rate, pitch, gap, pause)
-    if st.button("Generate MP3 (online)", disabled=not approved):
+    voice, rate, pitch, gap, pause, backend = voice_settings
+    signature = workflow.audio_signature(text, voice, rate, pitch, gap, pause, backend=backend)
+    if st.button("Generate MP3 (online)" if backend == "edge" else "Generate MP3 (offline)", disabled=not approved):
         output = proj / "narrated.mp3"
         progress = st.progress(0.0, text="Starting synthesis...")
 
@@ -268,7 +307,7 @@ def review_step(proj: Path, revision: str, voice_settings: tuple[str, str, str, 
             core.save_state(proj, state)
             with st.spinner("Synthesizing approved narration..."):
                 asyncio.run(core.generate_audio(proj, core.parse_script(text), voice, rate, pitch,
-                                                gap, pause, output, progress=update))
+                                                gap, pause, output, progress=update, backend=backend))
             state = core.load_state(proj)
             state["audio_source"] = signature
             core.save_state(proj, state)
@@ -307,7 +346,12 @@ def main() -> None:
         st.caption(f"Project saved at: {proj}")
         with st.expander("Slide text and speaker notes"):
             st.text(core.slides_as_markdown(slides))
-        voice_settings = voice_controls(proj)
+        try:
+            voice_settings = voice_controls(proj)
+        except (OSError, RuntimeError, ValueError) as exc:
+            report_error(exc)
+            lab_footer()
+            return
         configure_pipeline(proj)
         state = core.load_state(proj)
         stage = state.get("ui", {}).get("stage")

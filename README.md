@@ -216,6 +216,41 @@ For a first try, use a short deck with two or three slides.
    MP3** to save it. Individual slide clips are also available. You can share
    the MP3 through your school's learning platform, subject to its policies.
 
+### Emergency fallback on Mac: offline system voices
+
+If the online speech service is unavailable, open **Voice & pacing** and change
+**Speech backend** to **macOS voices (offline fallback)**. The app never switches
+voices automatically.
+
+- Choose **System default** or an installed macOS voice, then click
+  **Preview voice (offline)** to audition it.
+- Review and approve the script as usual, then click **Generate MP3 (offline)**.
+  Narrated MP3 and per-slide MP3 downloads work just like the online backend.
+- Installed voices synthesize locally; narration is not sent to Microsoft's
+  speech service. Additional voices may need a one-time download through macOS
+  accessibility speech settings. Voice quality and available voices vary by Mac.
+- Rate, slide gaps, and `[pause]` markers are supported. Normal rate is 175 words
+  per minute; the percentage slider adjusts it. Pitch adjustment is not supported.
+- Switching backend or voice requires regenerating audio, not reapproving an
+  unchanged script.
+
+The fallback requires macOS and its built-in `say` command. MP3 export uses the
+small `lameenc` library, included in the Mac requirements; no FFmpeg installation
+is needed. For an existing installation, stop the app, run
+`.venv/bin/python -m pip install -r requirements.txt` from the app folder, and
+restart it. Installing dependencies requires internet; using installed local
+voices afterward does not. Windows installations keep the online backend.
+
+CLI users can select the same fallback:
+
+```bash
+.venv/bin/python deck2audio.py voice-test --backend macos
+.venv/bin/python deck2audio.py tts path/to/project_narration --backend macos
+```
+
+Use `say -v '?'` to list installed voices, and add `--macos-voice "Voice Name"`
+to choose one. Leave `--pitch` at its default `+0Hz`.
+
 ### What the AI-assisted script aims to do
 
 The prompts request a personable one-person podcast style with natural "you"
@@ -243,8 +278,9 @@ rewrite content in that mode.
   Restarting a pipeline clears the active script approval and research selection.
 - **Treat saved work as private.** People with access to this app folder can
   access its projects. It is not designed as a shared, authenticated service.
-- **Internet is required** for initial installation, voice previews, and MP3
-  generation. The online speech service receives the text it will speak.
+- **Internet is required** for initial installation and online voice previews
+  and MP3 generation. The online speech service receives the text it will speak.
+  The macOS fallback uses installed voices locally and works offline after setup.
   Extraction, direct script preparation, and review work offline after setup.
 - **AI chat is your choice.** Prompts contain slide text and speaker notes.
   Pasting them into an AI service shares that content with that service.
@@ -269,6 +305,8 @@ rewrite content in that mode.
 | Installation or audio generation has a network/certificate error | Check your internet connection and school network restrictions. On Mac, run Python's **Install Certificates.command** if available. Ask IT for help rather than disabling certificate checks. |
 | Voice preview has a player but no sound | Press Play, check computer volume and output device, and ensure the browser tab is not muted. |
 | Voice preview or MP3 generation shows an error | Read the displayed message. Check internet access; try a built-in voice instead of a custom voice ID. The online service may be temporarily unavailable. |
+| Online speech returns `WSServerHandshakeError: 403` | The online service rejected synthesis. On Mac, select **macOS voices (offline fallback)** in **Voice & pacing**, preview a local voice, and generate again. The app does not switch narrators automatically. |
+| The macOS MP3 encoder is missing | Stop the app, reinstall the updated requirements with `.venv/bin/python -m pip install -r requirements.txt`, and restart it. |
 | A slide has no usable text or notes | Add speaker notes or text in PowerPoint, save, and upload the revised deck. Images alone are not converted into narration. |
 | Audio generation is disabled | Review and approve the full script. Changes to approved text require reapproval. |
 | A school computer blocks installation | Ask your IT staff for assistance. Do not bypass security policies. |

@@ -24,6 +24,8 @@ import textwrap
 from pathlib import Path
 from typing import Callable
 
+import macos_tts
+
 DEFAULT_VOICE = "en-US-AvaMultilingualNeural"
 WORDS_PER_MINUTE = 150
 SLIDE_HEADING = re.compile(r"^\s*#{1,6}\s*Slide\s+(\d+)\b.*$", re.IGNORECASE | re.MULTILINE)
@@ -634,7 +636,12 @@ def silent_mp3(seconds: float, header: bytes) -> bytes:
     return frame * max(1, round(seconds * srate / samples))
 
 
-async def synth_chunk(text: str, voice: str, rate: str, pitch: str, retries: int = 3) -> bytes:
+async def synth_chunk(text: str, voice: str, rate: str, pitch: str, retries: int = 3,
+                      *, backend: str = "edge") -> bytes:
+    if backend == "macos":
+        return macos_tts.encode_mp3(await macos_tts.synth_pcm(text, voice, rate, pitch))
+    if backend != "edge":
+        raise ValueError(f"Unknown speech backend: {backend}")
     import edge_tts
 
     for attempt in range(retries):
@@ -656,7 +663,7 @@ async def synth_chunk(text: str, voice: str, rate: str, pitch: str, retries: int
 
 
 async def tts_async(proj: Path, voice: str, rate: str, pitch: str, slide_gap: float, pause_len: float,
-                    output: Path) -> None:
+                    output: Path, *, backend: str = "edge") -> None:
     script_file = proj / "script.md"
     if not script_file.exists():
         sys.exit("No script.md found. Run the 'script' stage first.")
@@ -670,22 +677,28 @@ async def tts_async(proj: Path, voice: str, rate: str, pitch: str, slide_gap: fl
 
     words = sum(len(v.split()) for v in sections.values())
     banner("Step 4 · Text-to-speech")
-    print(f"Voice: {voice}   rate: {rate}   pitch: {pitch}")
+    print(f"Backend: {backend}   voice: {voice or 'System default'}   rate: {rate}   pitch: {pitch}")
     print(f"{len(sections)} slides, {words} words ≈ {words / WORDS_PER_MINUTE:.1f} min")
     if ask("Generate the audio now?", "yn") == "n":
         return
 
-    await generate_audio(proj, sections, voice, rate, pitch, slide_gap, pause_len, output)
+    await generate_audio(proj, sections, voice, rate, pitch, slide_gap, pause_len, output, backend=backend)
 
 
 async def generate_audio(proj: Path, sections: dict[int, str], voice: str, rate: str, pitch: str,
                          slide_gap: float, pause_len: float, output: Path,
-                         progress: Callable[[int, int], None] | None = None) -> None:
+                         progress: Callable[[int, int], None] | None = None,
+                         *, backend: str = "edge") -> None:
+    if backend not in ("edge", "macos"):
+        raise ValueError(f"Unknown speech backend: {backend}")
     if not sections or any(not re.sub(r"\[pause\]", "", clean_for_speech(text), flags=re.I).strip()
                            for text in sections.values()):
         raise ValueError("Every slide must have spoken text before generating audio.")
     if slide_gap < 0 or pause_len < 0:
         raise ValueError("Slide gaps and pauses cannot be negative.")
+    local = backend == "macos"
+    if local:
+        macos_tts.validate_settings(voice, rate, pitch)
     adir = proj / "audio"
     adir.mkdir(exist_ok=True)
     pieces: list[bytes] = []
@@ -697,21 +710,23 @@ async def generate_audio(proj: Path, sections: dict[int, str], voice: str, rate:
         print(f" • Slide {num} ({len(text.split())} words)")
         for si, seg in enumerate(segments):
             if seg:
-                audio = await synth_chunk(seg, voice, rate, pitch)
+                audio = (await macos_tts.synth_pcm(seg, voice, rate, pitch) if local
+                         else await synth_chunk(seg, voice, rate, pitch))
                 header = header or audio[:4]
                 slide_audio.append(audio)
             if si < len(segments) - 1 and header and pause_len > 0:
-                slide_audio.append(silent_mp3(pause_len, header))
+                slide_audio.append(macos_tts.silence(pause_len) if local else silent_mp3(pause_len, header))
         blob = b"".join(slide_audio)
-        (adir / f"slide_{num:03d}.mp3").write_bytes(blob)
+        (adir / f"slide_{num:03d}.mp3").write_bytes(macos_tts.encode_mp3(blob) if local else blob)
         if pieces and header and slide_gap > 0:
-            pieces.append(silent_mp3(slide_gap, header))
+            pieces.append(macos_tts.silence(slide_gap) if local else silent_mp3(slide_gap, header))
         pieces.append(blob)
         if progress:
             progress(index, len(sections))
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(b"".join(pieces))
+    combined = b"".join(pieces)
+    output.write_bytes(macos_tts.encode_mp3(combined) if local else combined)
     state = load_state(proj)
     state["audio"] = str(output)
     save_state(proj, state)
@@ -721,11 +736,13 @@ async def generate_audio(proj: Path, sections: dict[int, str], voice: str, rate:
 
 def tts(proj: Path, args) -> None:
     out = Path(args.output) if args.output else proj / f"{Path(load_state(proj).get('deck', 'presentation')).stem}_narrated.mp3"
-    asyncio.run(tts_async(proj, args.voice, args.rate, args.pitch, args.slide_gap, args.pause, out))
+    voice = args.macos_voice if args.backend == "macos" else args.voice
+    asyncio.run(tts_async(proj, voice, args.rate, args.pitch, args.slide_gap, args.pause, out,
+                          backend=args.backend))
 
 
-async def preview_voice(voice: str, rate: str, pitch: str, out: Path) -> None:
-    out.write_bytes(await synth_chunk(VOICE_PREVIEW_TEXT, voice, rate, pitch))
+async def preview_voice(voice: str, rate: str, pitch: str, out: Path, *, backend: str = "edge") -> None:
+    out.write_bytes(await synth_chunk(VOICE_PREVIEW_TEXT, voice, rate, pitch, backend=backend))
     print(f"✓ Voice sample → {out}")
     if shutil.which("afplay"):
         subprocess.call(["afplay", str(out)])
@@ -739,6 +756,10 @@ def main() -> None:
     sub.add_parser("ui", help="open the local browser interface")
 
     def add_tts_opts(p):
+        p.add_argument("--backend", choices=("edge", "macos"), default="edge",
+                       help="speech service: edge (online) or macos (local emergency fallback)")
+        p.add_argument("--macos-voice", default="",
+                       help="installed macOS voice name; default is the system voice (list: say -v '?')")
         p.add_argument("--voice", default=DEFAULT_VOICE,
                        help=f"edge-tts voice (default {DEFAULT_VOICE}; try en-US-EmmaMultilingualNeural, "
                             "en-US-JennyNeural, en-GB-SoniaNeural)")
@@ -786,7 +807,8 @@ def main() -> None:
             "--browser.gatherUsageStats", "false",
         ], cwd=Path(__file__).resolve().parent))
     if args.cmd == "voice-test":
-        asyncio.run(preview_voice(args.voice, args.rate, args.pitch, Path(args.output)))
+        voice = args.macos_voice if args.backend == "macos" else args.voice
+        asyncio.run(preview_voice(voice, args.rate, args.pitch, Path(args.output), backend=args.backend))
         return
 
     target = Path(args.target).expanduser()
