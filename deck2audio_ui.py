@@ -14,6 +14,7 @@ from pptx.exc import PackageNotFoundError
 
 import browser_workflow as workflow
 import deck2audio as core
+import kokoro_tts
 import macos_tts
 
 PROJECT_ROOT = Path(__file__).resolve().parent / "ui_projects"
@@ -39,9 +40,12 @@ VOICES = {
 
 def report_error(exc: BaseException) -> None:
     st.error(f"{type(exc).__name__}: {exc}")
-    if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status == 403 and macos_tts.available():
-        st.info("The online speech service rejected the request. For an emergency fallback, "
-                "select 'macOS voices (offline fallback)' under Voice & pacing.")
+    if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status == 403:
+        message = ("The online speech service rejected the request. Under Voice & pacing, "
+                   "select 'Kokoro voices (offline)' after completing its one-time setup.")
+        if macos_tts.available():
+            message += " For an emergency fallback, select 'macOS voices (offline fallback)'."
+        st.info(message)
 
 
 def lab_branding() -> None:
@@ -197,7 +201,7 @@ def voice_controls(proj: Path) -> tuple[str, str, str, float, float, str]:
         st.header("Voice & pacing")
         st.caption("Preset names indicate voice and accent, not guaranteed personality. "
                    "Charisma and humor come from the script.")
-        backends = {"Edge voices (online)": "edge"}
+        backends = {"Edge voices (online)": "edge", "Kokoro voices (offline)": "kokoro"}
         if macos_tts.available():
             backends["macOS voices (offline fallback)"] = "macos"
         backend_names = list(backends)
@@ -210,12 +214,20 @@ def voice_controls(proj: Path) -> tuple[str, str, str, float, float, str]:
         custom_default: str = saved.get("custom", "")
         custom = custom_default
         macos_voice = saved.get("macos_voice", "")
+        kokoro_voice = saved.get("kokoro_voice", kokoro_tts.DEFAULT_VOICE)
         if backend == "edge":
             index = names.index(selection) if selection in names else 0
             selection = st.selectbox("Narrator voice", names, index=index, key=f"voice_{proj}")
             custom = st.text_input("Custom edge-tts voice ID (optional)", value=custom_default,
                                    key=f"custom_voice_{proj}")
             voice = custom.strip() or VOICES[selection]
+        elif backend == "kokoro":
+            local_names = list(kokoro_tts.VOICES)
+            index = local_names.index(kokoro_voice) if kokoro_voice in local_names else 0
+            kokoro_voice = st.selectbox(
+                "Kokoro voice", local_names, index=index, key=f"kokoro_voice_{proj}",
+                format_func=kokoro_tts.VOICES.__getitem__)
+            voice = kokoro_voice
         else:
             voices = {"": "System default", **installed_macos_voices()}
             local_names = list(voices)
@@ -228,14 +240,21 @@ def voice_controls(proj: Path) -> tuple[str, str, str, float, float, str]:
         pitch_value = saved.get("pitch", 0)
         if backend == "edge":
             pitch_value = st.slider("Pitch adjustment (Hz)", -20, 20, pitch_value, key=f"pitch_{proj}")
-        else:
+        elif backend == "macos":
             st.caption("Pitch adjustment is unavailable for macOS voices. "
                        "Normal speed uses 175 words per minute; the rate slider adjusts that speed.")
+        else:
+            st.caption("Pitch adjustment is unavailable for Kokoro. "
+                       "The rate slider adjusts the model's natural speaking speed.")
         gap = st.slider("Silence between slides (seconds)", 0.0, 5.0, saved.get("gap", 1.2), 0.1, key=f"gap_{proj}")
         pause = st.slider("[pause] length (seconds)", 0.0, 3.0, saved.get("pause", 0.8), 0.1, key=f"pause_{proj}")
         rate, pitch = f"{rate_value:+d}%", f"{pitch_value:+d}Hz" if backend == "edge" else "+0Hz"
         if backend == "edge":
             st.caption("Voice preview and MP3 generation need internet and send spoken text to Microsoft's TTS service.")
+        elif backend == "kokoro":
+            st.caption("Kokoro synthesizes locally without sending narration to a speech service. "
+                       "One-time setup: install requirements-kokoro.txt and download the model files "
+                       "to models/kokoro (see README.md). Synthesis works offline after setup.")
         else:
             st.caption("Emergency fallback: synthesis uses installed macOS voices locally. "
                        "No narration is sent to Microsoft's TTS service. Voices sound different from Edge.")
@@ -251,7 +270,8 @@ def voice_controls(proj: Path) -> tuple[str, str, str, float, float, str]:
         if sample and sample[0] == (backend, voice, rate, pitch):
             st.audio(sample[1], format="audio/mp3")
     values = {"selection": selection, "custom": custom, "rate": rate_value, "pitch": pitch_value,
-              "gap": gap, "pause": pause, "backend": backend, "macos_voice": macos_voice}
+              "gap": gap, "pause": pause, "backend": backend, "macos_voice": macos_voice,
+              "kokoro_voice": kokoro_voice}
     if saved != values:
         state = core.load_state(proj)
         state["ui_voice"] = values

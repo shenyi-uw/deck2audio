@@ -422,7 +422,7 @@ class BrowserInterfaceTests(ProjectTestCase):
             self.button(app, "Approve script for audio").click().run()
             with patch("macos_tts.validate_settings"), \
                     patch("macos_tts.synth_pcm", new=AsyncMock(return_value=b"\x01\x00" * 12)), \
-                    patch("macos_tts.encode_mp3", return_value=b"mp3"), \
+                    patch("pcm_audio.encode_mp3", return_value=b"mp3"), \
                     patch("deck2audio.synth_chunk", side_effect=AssertionError("Edge called")):
                 self.button(app, "Generate MP3 (offline)").click().run()
             self.assertEqual(list(app.exception), [])
@@ -437,11 +437,47 @@ class BrowserInterfaceTests(ProjectTestCase):
             next(box for box in app.selectbox if box.label == "Speech backend").select("Edge voices (online)").run()
             self.assertTrue(any("settings changed" in info.value for info in app.info))
 
-    def test_non_macos_only_offers_edge(self):
+    def test_non_macos_offers_edge_and_kokoro(self):
         with patch("macos_tts.available", return_value=False):
             app = self.app()
         backend = next(box for box in app.selectbox if box.label == "Speech backend")
-        self.assertEqual(list(backend.options), ["Edge voices (online)"])
+        self.assertEqual(list(backend.options), ["Edge voices (online)", "Kokoro voices (offline)"])
+
+    def test_kokoro_preview_generation_persistence_and_backend_switch(self):
+        workflow.start_pipeline(self.proj, workflow.PipelineConfig(skip_llm=True))
+        app = self.app()
+        next(box for box in app.selectbox if box.label == "Speech backend").select("Kokoro voices (offline)").run()
+        self.assertTrue(self.button(app, "Generate MP3 (offline)").disabled)
+        self.assertNotIn("Pitch adjustment (Hz)", [slider.label for slider in app.slider])
+        next(box for box in app.selectbox if box.label == "Kokoro voice").select("af_bella").run()
+        with patch("deck2audio.synth_chunk", new=AsyncMock(return_value=b"mp3")) as preview:
+            self.button(app, "Preview voice (offline)").click().run()
+        preview.assert_awaited_once_with(core.VOICE_PREVIEW_TEXT, "af_bella", "+0%", "+0Hz", backend="kokoro")
+        self.button(app, "Approve script for audio").click().run()
+        with patch("kokoro_tts.synth_pcm", new=AsyncMock(return_value=b"\x01\x00" * 12)), \
+                patch("pcm_audio.encode_mp3", return_value=b"mp3"), \
+                patch("edge_tts.Communicate", side_effect=AssertionError("Edge called")):
+            self.button(app, "Generate MP3 (offline)").click().run()
+        self.assertEqual(list(app.exception), [])
+        state = core.load_state(self.proj)
+        self.assertEqual(state["ui_voice"]["kokoro_voice"], "af_bella")
+        self.assertEqual(state["ui_voice"]["backend"], "kokoro")
+        self.assertEqual(state["audio_source"], workflow.audio_signature(
+            (self.proj / "script.md").read_text(), "af_bella", "+0%", "+0Hz", 1.2, 0.8, backend="kokoro"))
+        resumed = self.app()
+        self.assertEqual(next(box for box in resumed.selectbox if box.label == "Speech backend").value,
+                         "Kokoro voices (offline)")
+        self.assertEqual(next(box for box in resumed.selectbox if box.label == "Kokoro voice").value, "af_bella")
+        next(box for box in app.selectbox if box.label == "Speech backend").select("Edge voices (online)").run()
+        self.assertTrue(any("settings changed" in info.value for info in app.info))
+
+    def test_kokoro_setup_failure_is_visible(self):
+        app = self.app()
+        next(box for box in app.selectbox if box.label == "Speech backend").select("Kokoro voices (offline)").run()
+        with patch("kokoro_tts.synth_pcm", new=AsyncMock(side_effect=RuntimeError("Kokoro model files are missing"))):
+            self.button(app, "Preview voice (offline)").click().run()
+        self.assertEqual(list(app.exception), [])
+        self.assertTrue(any("model files are missing" in error.value for error in app.error))
 
 
 if __name__ == "__main__":

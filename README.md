@@ -23,7 +23,8 @@ You will need:
 - **Python**, a free program that runs the app. Instructions are below. Python
   **3.11** is the version used to test this project; use it for the most
   predictable setup.
-- Internet access for downloading/installing the software and generating audio.
+- Internet access for downloading/installing the software and generating audio
+  with online voices. Kokoro and installed macOS voices work offline after setup.
 - Optionally, access to an AI chat service such as ChatGPT, Claude, Copilot, or
   Gemini if you want help rewriting your narration. This is **not required**:
   you can use your slides and speaker notes directly.
@@ -235,11 +236,11 @@ voices automatically.
   unchanged script.
 
 The fallback requires macOS and its built-in `say` command. MP3 export uses the
-small `lameenc` library, included in the Mac requirements; no FFmpeg installation
+small `lameenc` library, included in the requirements; no FFmpeg installation
 is needed. For an existing installation, stop the app, run
 `.venv/bin/python -m pip install -r requirements.txt` from the app folder, and
 restart it. Installing dependencies requires internet; using installed local
-voices afterward does not. Windows installations keep the online backend.
+voices afterward does not. On Windows, use Edge or set up Kokoro below.
 
 CLI users can select the same fallback:
 
@@ -250,6 +251,63 @@ CLI users can select the same fallback:
 
 Use `say -v '?'` to list installed voices, and add `--macos-voice "Voice Name"`
 to choose one. Leave `--pitch` at its default `+0Hz`.
+
+### Natural offline voices: Kokoro (Mac and Windows)
+
+Choose **Kokoro voices (offline)** in **Voice & pacing** for local American-English
+speech. Three voices are offered: **Heart** (the default), **Bella**, and
+**Michael**. Kokoro runs on your CPU with ONNX Runtime; no GPU, PyTorch, API key,
+or FFmpeg is required. The model stays in memory between requests.
+
+**One-time setup requires internet.** Stop the app first, then install the
+optional supporting software from your app folder:
+
+**Mac**
+
+```bash
+.venv/bin/python -m pip install -r requirements-kokoro.txt
+```
+
+**Windows PowerShell**
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-kokoro.txt
+```
+
+Create a folder named `models` inside the app folder, and a folder named `kokoro`
+inside that. Download both files from the
+[kokoro-onnx model release](https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files-v1.1):
+
+- [kokoro-v1.0.onnx](https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.onnx)
+- [voices-v1.0.bin](https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/voices-v1.0.bin)
+
+Put both files directly in `models/kokoro`, keeping their exact filenames.
+Together they require about **340 MiB** of disk space, in addition to the Python
+packages. These downloaded assets are not included in the app ZIP or Git.
+
+Restart the app, select **Kokoro voices (offline)**, choose a voice, and click
+**Preview voice (offline)**. After approving your script, click **Generate MP3
+(offline)**. Speed, slide gaps, `[pause]` markers, and per-slide downloads work
+with Kokoro. Pitch adjustment is not supported. Switching engine or voice
+requires regenerating audio, not reapproving an unchanged script.
+
+Synthesis reads only local model files and does not download anything or send
+narration to a service. Missing packages or models produce setup errors rather
+than silently switching to an online engine. Keep `models/kokoro` when updating
+or moving the app if you want to avoid downloading the assets again.
+
+CLI examples (Mac; use the Windows Python path above on Windows):
+
+```bash
+.venv/bin/python deck2audio.py voice-test --backend kokoro --kokoro-voice af_heart
+.venv/bin/python deck2audio.py tts path/to/project_narration --backend kokoro --kokoro-voice am_michael
+```
+
+Keep `--pitch` at `+0Hz`; Kokoro supports rates from `-50%` to `+100%`.
+Voice quality and pronunciation depend on the script; preview technical terms
+and acronyms before generating a whole presentation.
+The [Kokoro model](https://huggingface.co/hexgrad/Kokoro-82M) is Apache-2.0 licensed;
+the [kokoro-onnx runtime](https://github.com/thewh1teagle/kokoro-onnx) is MIT licensed.
 
 ### What the AI-assisted script aims to do
 
@@ -281,6 +339,7 @@ rewrite content in that mode.
 - **Internet is required** for initial installation and online voice previews
   and MP3 generation. The online speech service receives the text it will speak.
   The macOS fallback uses installed voices locally and works offline after setup.
+  Kokoro also works offline after installing its packages and model files.
   Extraction, direct script preparation, and review work offline after setup.
 - **AI chat is your choice.** Prompts contain slide text and speaker notes.
   Pasting them into an AI service shares that content with that service.
@@ -305,8 +364,9 @@ rewrite content in that mode.
 | Installation or audio generation has a network/certificate error | Check your internet connection and school network restrictions. On Mac, run Python's **Install Certificates.command** if available. Ask IT for help rather than disabling certificate checks. |
 | Voice preview has a player but no sound | Press Play, check computer volume and output device, and ensure the browser tab is not muted. |
 | Voice preview or MP3 generation shows an error | Read the displayed message. Check internet access; try a built-in voice instead of a custom voice ID. The online service may be temporarily unavailable. |
-| Online speech returns `WSServerHandshakeError: 403` | The online service rejected synthesis. On Mac, select **macOS voices (offline fallback)** in **Voice & pacing**, preview a local voice, and generate again. The app does not switch narrators automatically. |
-| The macOS MP3 encoder is missing | Stop the app, reinstall the updated requirements with `.venv/bin/python -m pip install -r requirements.txt`, and restart it. |
+| Online speech returns `WSServerHandshakeError: 403` | The online service rejected synthesis. Select **Kokoro voices (offline)** after its one-time setup, or **macOS voices (offline fallback)** on Mac. Preview a local voice and generate again. The app does not switch narrators automatically. |
+| The local MP3 encoder is missing | Stop the app, reinstall the updated requirements with your app's `.venv` Python, and restart it. |
+| Kokoro is not installed, or its model files are missing | Follow [Kokoro setup](#natural-offline-voices-kokoro-mac-and-windows), including both model downloads, then restart the app. |
 | A slide has no usable text or notes | Add speaker notes or text in PowerPoint, save, and upload the revised deck. Images alone are not converted into narration. |
 | Audio generation is disabled | Review and approve the full script. Changes to approved text require reapproval. |
 | A school computer blocks installation | Ask your IT staff for assistance. Do not bypass security policies. |

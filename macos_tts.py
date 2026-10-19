@@ -10,7 +10,7 @@ import tempfile
 import wave
 from pathlib import Path
 
-SAMPLE_RATE = 24000
+from pcm_audio import SAMPLE_RATE
 
 
 def available() -> bool:
@@ -85,26 +85,3 @@ async def synth_pcm(text: str, voice: str, rate: str, pitch: str) -> bytes:
         if not pcm:
             raise RuntimeError("macOS speech returned no audio.")
         return pcm
-
-
-def silence(seconds: float) -> bytes:
-    return bytes(round(seconds * SAMPLE_RATE) * 2)
-
-
-def encode_mp3(pcm: bytes) -> bytes:
-    try:
-        import lameenc
-    except ImportError as exc:
-        raise RuntimeError(
-            "The macOS MP3 encoder is missing. Install the updated requirements.txt "
-            "using this app's .venv Python, then restart the app."
-        ) from exc
-    encoder = lameenc.Encoder()
-    encoder.set_bit_rate(48)
-    encoder.set_in_sample_rate(SAMPLE_RATE)
-    encoder.set_channels(1)
-    encoder.set_quality(2)
-    audio = bytes(encoder.encode(pcm)) + bytes(encoder.flush())
-    if not audio:
-        raise RuntimeError("The macOS MP3 encoder returned no audio.")
-    return audio

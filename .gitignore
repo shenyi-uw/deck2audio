@@ -8,6 +8,7 @@ __pycache__/
 *.mp3
 *.pptx
 ui_projects/
+models/kokoro/
 
 # macOS
 .DS_Store

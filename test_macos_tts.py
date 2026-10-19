@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import deck2audio as core
 import macos_tts
+import pcm_audio
 
 
 class MacOSVoiceTests(unittest.TestCase):
@@ -76,13 +77,13 @@ class MacOSVoiceTests(unittest.TestCase):
     def test_missing_encoder_has_actionable_error(self):
         with patch.dict("sys.modules", {"lameenc": None}):
             with self.assertRaisesRegex(RuntimeError, "encoder is missing"):
-                macos_tts.encode_mp3(b"\0\0")
+                pcm_audio.encode_mp3(b"\0\0")
 
 
 class LocalAudioTests(unittest.TestCase):
     def test_local_preview_never_calls_edge(self):
         with patch("macos_tts.synth_pcm", new=AsyncMock(return_value=b"\x01\x00")) as synth, \
-                patch("macos_tts.encode_mp3", return_value=b"mp3"), \
+                patch("pcm_audio.encode_mp3", return_value=b"mp3"), \
                 patch("edge_tts.Communicate", side_effect=AssertionError("Online speech called")):
             audio = asyncio.run(core.synth_chunk("Test", "", "+0%", "+0Hz", backend="macos"))
         self.assertEqual(audio, b"mp3")
@@ -102,7 +103,7 @@ class LocalAudioTests(unittest.TestCase):
 
             with patch("macos_tts.validate_settings"), \
                     patch("macos_tts.synth_pcm", new=AsyncMock(return_value=pcm)), \
-                    patch("macos_tts.encode_mp3", side_effect=encode), \
+                    patch("pcm_audio.encode_mp3", side_effect=encode), \
                     patch("deck2audio.synth_chunk", side_effect=AssertionError("Online speech called")):
                 asyncio.run(core.generate_audio(
                     proj, {1: "First [pause] next", 2: "Second"}, "", "+0%", "+0Hz",
