@@ -437,11 +437,13 @@ class BrowserInterfaceTests(ProjectTestCase):
             next(box for box in app.selectbox if box.label == "Speech backend").select("Edge voices (online)").run()
             self.assertTrue(any("settings changed" in info.value for info in app.info))
 
-    def test_non_macos_offers_edge_and_kokoro(self):
+    def test_non_macos_offers_all_cross_platform_backends(self):
         with patch("macos_tts.available", return_value=False):
             app = self.app()
         backend = next(box for box in app.selectbox if box.label == "Speech backend")
-        self.assertEqual(list(backend.options), ["Edge voices (online)", "Kokoro voices (offline)"])
+        self.assertEqual(list(backend.options), [
+            "Edge voices (online)", "Kokoro voices (offline)",
+            "VibeVoice voices (offline, experimental)", "My voice - Chatterbox (offline, experimental)"])
 
     def test_kokoro_preview_generation_persistence_and_backend_switch(self):
         workflow.start_pipeline(self.proj, workflow.PipelineConfig(skip_llm=True))
@@ -478,6 +480,92 @@ class BrowserInterfaceTests(ProjectTestCase):
             self.button(app, "Preview voice (offline)").click().run()
         self.assertEqual(list(app.exception), [])
         self.assertTrue(any("model files are missing" in error.value for error in app.error))
+
+    def test_vibevoice_preview_generation_persistence_and_natural_speed(self):
+        import neural_tts
+
+        workflow.start_pipeline(self.proj, workflow.PipelineConfig(skip_llm=True))
+        app = self.app()
+        next(slider for slider in app.slider if slider.label == "Speaking rate (%)").set_value(10).run()
+        next(box for box in app.selectbox if box.label == "Speech backend").select(
+            "VibeVoice voices (offline, experimental)").run()
+        self.assertEqual(list(app.exception), [])
+        self.assertNotIn("Speaking rate (%)", [slider.label for slider in app.slider])
+        self.assertNotIn("Pitch adjustment (Hz)", [slider.label for slider in app.slider])
+        self.assertTrue(self.button(app, "Generate MP3 (offline)").disabled)
+        next(box for box in app.selectbox if box.label == "VibeVoice narrator").select("Grace").run()
+        with patch("deck2audio.synth_chunk", new=AsyncMock(return_value=b"mp3")) as preview:
+            self.button(app, "Preview voice (offline)").click().run()
+        preview.assert_awaited_once_with(core.VOICE_PREVIEW_TEXT, "Grace", "+0%", "+0Hz", backend="vibevoice")
+        self.button(app, "Approve script for audio").click().run()
+        with patch.object(neural_tts.Worker, "synthesize", return_value=b"\x01\0" * 12), \
+                patch("pcm_audio.encode_mp3", return_value=b"mp3"):
+            self.button(app, "Generate MP3 (offline)").click().run()
+        self.assertEqual(list(app.exception), [])
+        state = core.load_state(self.proj)
+        self.assertEqual(state["ui_voice"]["vibevoice_voice"], "Grace")
+        self.assertEqual(state["ui_voice"]["rate"], 10)
+        self.assertEqual(state["audio_source"], workflow.audio_signature(
+            (self.proj / "script.md").read_text(), "Grace", "+0%", "+0Hz", 1.2, 0.8, backend="vibevoice"))
+        resumed = self.app()
+        self.assertEqual(next(box for box in resumed.selectbox if box.label == "VibeVoice narrator").value, "Grace")
+        next(box for box in app.selectbox if box.label == "Speech backend").select("Edge voices (online)").run()
+        self.assertTrue(any("settings changed" in info.value for info in app.info))
+
+    def test_microphone_recording_requires_consent_saves_previews_and_deletes(self):
+        from test_neural_tts import recording
+
+        workflow.start_pipeline(self.proj, workflow.PipelineConfig(skip_llm=True))
+        app = self.app()
+        next(box for box in app.selectbox if box.label == "Speech backend").select(
+            "My voice - Chatterbox (offline, experimental)").run()
+        self.assertEqual(list(app.exception), [])
+        self.assertTrue(self.button(app, "Save voice reference").disabled)
+        self.assertTrue(self.button(app, "Preview voice (offline)").disabled)
+        self.assertEqual(len(app.get("audio_input")), 1)
+        source = MagicMock()
+        source.getvalue.return_value = recording()
+        with patch("streamlit.audio_input", return_value=source):
+            app.run()
+            self.assertTrue(self.button(app, "Save voice reference").disabled)
+            next(box for box in app.checkbox if box.label.startswith("This is my voice")).check().run()
+            self.button(app, "Save voice reference").click().run()
+        self.assertEqual(list(app.exception), [])
+        references = list((self.proj / "voices").glob("*.wav"))
+        self.assertEqual(len(references), 1)
+        self.assertEqual(references[0].read_bytes(), recording())
+        voice = str(references[0].resolve())
+        self.assertEqual(core.load_state(self.proj)["ui_voice"]["voice_reference"], voice)
+        with patch("deck2audio.synth_chunk", new=AsyncMock(return_value=b"mp3")) as preview:
+            self.button(app, "Preview voice (offline)").click().run()
+        preview.assert_awaited_once_with(core.VOICE_PREVIEW_TEXT, voice, "+0%", "+0Hz", backend="chatterbox")
+        self.button(app, "Approve script for audio").click().run()
+        import neural_tts
+        with patch.object(neural_tts.Worker, "synthesize", return_value=b"\x01\0" * 12), \
+                patch("pcm_audio.encode_mp3", return_value=b"mp3"):
+            self.button(app, "Generate MP3 (offline)").click().run()
+        self.assertEqual(list(app.exception), [])
+        resumed = self.app()
+        self.assertEqual(next(box for box in resumed.selectbox if box.label == "Saved voice reference").value, voice)
+        self.button(app, "Delete selected voice reference").click().run()
+        self.assertEqual(list(app.exception), [])
+        self.assertFalse(references[0].exists())
+        self.assertEqual(core.load_state(self.proj)["ui_voice"]["voice_reference"], "")
+        self.assertTrue(self.button(app, "Generate MP3 (offline)").disabled)
+        self.assertNotIn("audio_source", core.load_state(self.proj))
+
+    def test_invalid_microphone_recording_reports_error_without_saving(self):
+        app = self.app()
+        next(box for box in app.selectbox if box.label == "Speech backend").select(
+            "My voice - Chatterbox (offline, experimental)").run()
+        source = MagicMock()
+        source.getvalue.return_value = b"invalid wav"
+        with patch("streamlit.audio_input", return_value=source):
+            next(box for box in app.checkbox if box.label.startswith("This is my voice")).check().run()
+            self.button(app, "Save voice reference").click().run()
+        self.assertEqual(list(app.exception), [])
+        self.assertTrue(any("valid WAV" in error.value for error in app.error))
+        self.assertFalse((self.proj / "voices").exists())
 
 
 if __name__ == "__main__":

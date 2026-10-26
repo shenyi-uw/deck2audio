@@ -1,5 +1,7 @@
 # Python
 .venv/
+.venv-vibevoice/
+.venv-chatterbox/
 __pycache__/
 *.pyc
 
@@ -9,6 +11,8 @@ __pycache__/
 *.pptx
 ui_projects/
 models/kokoro/
+models/vibevoice/
+models/chatterbox/
 
 # macOS
 .DS_Store

@@ -1,0 +1,2 @@
+vibevoice[streamingtts] @ git+https://github.com/microsoft/VibeVoice.git@16fb2cb1217c9934a886e1948ffb06120caa2df5
+torch==2.6.0

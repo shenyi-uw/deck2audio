@@ -16,6 +16,7 @@ import browser_workflow as workflow
 import deck2audio as core
 import kokoro_tts
 import macos_tts
+import neural_tts
 
 PROJECT_ROOT = Path(__file__).resolve().parent / "ui_projects"
 AUDIENCES = {
@@ -195,6 +196,55 @@ def installed_macos_voices() -> dict[str, str]:
     return macos_tts.list_voices()
 
 
+def voice_reference_controls(proj: Path, selected: str) -> str:
+    st.caption("Voice cloning uses Chatterbox, not VibeVoice. Record 5-30 seconds of clear speech "
+               "in a quiet room. Recordings stay on this computer after you explicitly save them. "
+               "Microphone access requires browser permission on localhost or HTTPS.")
+    recorded = st.audio_input("Record your voice", key=f"recording_{proj}")
+    uploaded = st.file_uploader("Or upload a voice reference (16-bit WAV)", type=["wav"],
+                                key=f"voice_upload_{proj}")
+    consent = st.checkbox("This is my voice, or I have the speaker's explicit permission to clone it.",
+                          key=f"voice_consent_{proj}")
+    source = recorded if recorded is not None else uploaded
+    if recorded is not None and uploaded is not None:
+        st.caption("Both inputs are present; the microphone recording will be saved.")
+    if st.button("Save voice reference", disabled=source is None or not consent):
+        if source is not None:
+            try:
+                selected = str(neural_tts.save_reference(proj, source.getvalue(), consent=consent))
+                st.session_state[f"reference_{proj}"] = selected
+                st.success("Voice reference saved locally.")
+            except (OSError, ValueError) as exc:
+                report_error(exc)
+    references = sorted((proj / "voices").glob("*.wav"))
+    options = ["", *(str(path.resolve()) for path in references)]
+    index = options.index(selected) if selected in options else 0
+    selected = st.selectbox(
+        "Saved voice reference", options, index=index, key=f"reference_{proj}",
+        format_func=lambda value: f"Recording {Path(value).stem[:12]}" if value else "Choose a recording")
+    if selected:
+        st.audio(selected, format="audio/wav")
+        if st.button("Delete selected voice reference"):
+            try:
+                path = Path(selected)
+                if path.parent.resolve() != (proj / "voices").resolve():
+                    raise ValueError("Voice reference must be inside this project's voices folder.")
+                path.unlink()
+                state = core.load_state(proj)
+                state.setdefault("ui_voice", {})["voice_reference"] = ""
+                state.pop("audio_source", None)
+                core.save_state(proj, state)
+                st.session_state.pop(f"reference_{proj}", None)
+                st.session_state.pop(f"sample_{proj}", None)
+                st.rerun()
+            except (OSError, ValueError) as exc:
+                report_error(exc)
+    st.caption("Generated speech is AI-generated. Do not impersonate anyone or present it as a genuine recording. "
+               "Deleting a reference does not delete previously generated MP3s or your backups. "
+               "Clear the recorder and uploaded file to discard unsaved browser inputs.")
+    return selected
+
+
 def voice_controls(proj: Path) -> tuple[str, str, str, float, float, str]:
     saved = core.load_state(proj).get("ui_voice", {})
     with st.sidebar:
@@ -202,6 +252,8 @@ def voice_controls(proj: Path) -> tuple[str, str, str, float, float, str]:
         st.caption("Preset names indicate voice and accent, not guaranteed personality. "
                    "Charisma and humor come from the script.")
         backends = {"Edge voices (online)": "edge", "Kokoro voices (offline)": "kokoro"}
+        backends["VibeVoice voices (offline, experimental)"] = "vibevoice"
+        backends["My voice - Chatterbox (offline, experimental)"] = "chatterbox"
         if macos_tts.available():
             backends["macOS voices (offline fallback)"] = "macos"
         backend_names = list(backends)
@@ -215,6 +267,8 @@ def voice_controls(proj: Path) -> tuple[str, str, str, float, float, str]:
         custom = custom_default
         macos_voice = saved.get("macos_voice", "")
         kokoro_voice = saved.get("kokoro_voice", kokoro_tts.DEFAULT_VOICE)
+        vibevoice_voice = saved.get("vibevoice_voice", "Emma")
+        voice_reference = saved.get("voice_reference", "")
         if backend == "edge":
             index = names.index(selection) if selection in names else 0
             selection = st.selectbox("Narrator voice", names, index=index, key=f"voice_{proj}")
@@ -228,6 +282,16 @@ def voice_controls(proj: Path) -> tuple[str, str, str, float, float, str]:
                 "Kokoro voice", local_names, index=index, key=f"kokoro_voice_{proj}",
                 format_func=kokoro_tts.VOICES.__getitem__)
             voice = kokoro_voice
+        elif backend == "vibevoice":
+            voices = list(neural_tts.VIBEVOICE_VOICES)
+            index = voices.index(vibevoice_voice) if vibevoice_voice in voices else 0
+            vibevoice_voice = st.selectbox(
+                "VibeVoice narrator", voices, index=index, key=f"vibevoice_voice_{proj}",
+                format_func=neural_tts.VIBEVOICE_VOICES.__getitem__)
+            voice = vibevoice_voice
+        elif backend == "chatterbox":
+            voice_reference = voice_reference_controls(proj, voice_reference)
+            voice = voice_reference
         else:
             voices = {"": "System default", **installed_macos_voices()}
             local_names = list(voices)
@@ -236,29 +300,41 @@ def voice_controls(proj: Path) -> tuple[str, str, str, float, float, str]:
                 "Installed macOS voice", local_names, index=index, key=f"macos_voice_{proj}",
                 format_func=lambda name: f"{name} ({voices[name]})" if name else voices[name])
             voice = macos_voice
-        rate_value = st.slider("Speaking rate (%)", -50, 50, saved.get("rate", 0), key=f"rate_{proj}")
+        natural_only = backend in ("vibevoice", "chatterbox")
+        rate_value = saved.get("rate", 0)
+        if not natural_only:
+            rate_value = st.slider("Speaking rate (%)", -50, 50, rate_value, key=f"rate_{proj}")
         pitch_value = saved.get("pitch", 0)
         if backend == "edge":
             pitch_value = st.slider("Pitch adjustment (Hz)", -20, 20, pitch_value, key=f"pitch_{proj}")
         elif backend == "macos":
             st.caption("Pitch adjustment is unavailable for macOS voices. "
                        "Normal speed uses 175 words per minute; the rate slider adjusts that speed.")
-        else:
+        elif backend == "kokoro":
             st.caption("Pitch adjustment is unavailable for Kokoro. "
                        "The rate slider adjusts the model's natural speaking speed.")
+        else:
+            st.caption("This experimental engine uses natural speed and pitch; rate and pitch controls "
+                       "are unavailable. Long narration is split into smaller passages.")
         gap = st.slider("Silence between slides (seconds)", 0.0, 5.0, saved.get("gap", 1.2), 0.1, key=f"gap_{proj}")
         pause = st.slider("[pause] length (seconds)", 0.0, 3.0, saved.get("pause", 0.8), 0.1, key=f"pause_{proj}")
-        rate, pitch = f"{rate_value:+d}%", f"{pitch_value:+d}Hz" if backend == "edge" else "+0Hz"
+        rate = "+0%" if natural_only else f"{rate_value:+d}%"
+        pitch = f"{pitch_value:+d}Hz" if backend == "edge" else "+0Hz"
         if backend == "edge":
             st.caption("Voice preview and MP3 generation need internet and send spoken text to Microsoft's TTS service.")
         elif backend == "kokoro":
             st.caption("Kokoro synthesizes locally without sending narration to a speech service. "
                        "One-time setup: install requirements-kokoro.txt and download the model files "
                        "to models/kokoro (see README.md). Synthesis works offline after setup.")
+        elif natural_only:
+            st.caption(f"One-time setup: run setup_offline_tts.py {backend} with the app's Python "
+                       "(see README.md). After setup, synthesis is local with no API or subscription fees. "
+                       "First use loads the model and may take a while; preview pronunciation before generating.")
         else:
             st.caption("Emergency fallback: synthesis uses installed macOS voices locally. "
                        "No narration is sent to Microsoft's TTS service. Voices sound different from Edge.")
-        if st.button("Preview voice (online)" if backend == "edge" else "Preview voice (offline)"):
+        if st.button("Preview voice (online)" if backend == "edge" else "Preview voice (offline)",
+                     disabled=backend == "chatterbox" and not voice):
             try:
                 with st.spinner("Generating voice sample..."):
                     sample = asyncio.run(core.synth_chunk(core.VOICE_PREVIEW_TEXT, voice, rate, pitch,
@@ -271,7 +347,8 @@ def voice_controls(proj: Path) -> tuple[str, str, str, float, float, str]:
             st.audio(sample[1], format="audio/mp3")
     values = {"selection": selection, "custom": custom, "rate": rate_value, "pitch": pitch_value,
               "gap": gap, "pause": pause, "backend": backend, "macos_voice": macos_voice,
-              "kokoro_voice": kokoro_voice}
+              "kokoro_voice": kokoro_voice, "vibevoice_voice": vibevoice_voice,
+              "voice_reference": voice_reference}
     if saved != values:
         state = core.load_state(proj)
         state["ui_voice"] = values
@@ -313,7 +390,8 @@ def review_step(proj: Path, revision: str, voice_settings: tuple[str, str, str, 
     st.subheader("5. Generate and listen")
     voice, rate, pitch, gap, pause, backend = voice_settings
     signature = workflow.audio_signature(text, voice, rate, pitch, gap, pause, backend=backend)
-    if st.button("Generate MP3 (online)" if backend == "edge" else "Generate MP3 (offline)", disabled=not approved):
+    if st.button("Generate MP3 (online)" if backend == "edge" else "Generate MP3 (offline)",
+                 disabled=not approved or (backend == "chatterbox" and not voice)):
         output = proj / "narrated.mp3"
         progress = st.progress(0.0, text="Starting synthesis...")
 

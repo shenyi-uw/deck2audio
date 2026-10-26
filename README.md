@@ -309,6 +309,127 @@ and acronyms before generating a whole presentation.
 The [Kokoro model](https://huggingface.co/hexgrad/Kokoro-82M) is Apache-2.0 licensed;
 the [kokoro-onnx runtime](https://github.com/thewh1teagle/kokoro-onnx) is MIT licensed.
 
+### Experimental offline narration: VibeVoice and your own voice
+
+All existing engines remain available. Two additional options are provided:
+
+- **VibeVoice voices (offline, experimental)**: the official Microsoft
+  VibeVoice-Realtime model with **Emma, Grace, Carter, Davis, Frank, and Mike**.
+  These are English presets; the repository does not certify each accent as
+  American. The official Realtime release does **not** expose microphone-based
+  voice cloning.
+- **My voice - Chatterbox (offline, experimental)**: a separate English
+  voice-cloning engine that uses a recording of your voice or another speaker
+  who has explicitly given permission.
+
+These engines run in separate Python environments to avoid dependency conflicts
+with each other and Kokoro. Apple Silicon uses MPS acceleration, NVIDIA systems
+use CUDA when supported by their installed PyTorch build, and other systems use
+CPU. CPU generation can be slow. Both engines currently use **natural speed and
+pitch**; existing rate/pitch settings are retained for the other engines.
+Slide gaps, `[pause]` markers, combined MP3s, and per-slide clips are supported.
+Long passages are split into bounded chunks to fit the models; prosody may
+change at chunk boundaries.
+
+#### One-time setup
+
+Stop the app, open a command window in the app folder, and run the setup for
+each engine you want. These commands **require internet** and download public
+model assets from their official repositories. No API key is needed.
+
+**Mac**
+
+```bash
+.venv/bin/python setup_offline_tts.py vibevoice
+.venv/bin/python setup_offline_tts.py chatterbox
+```
+
+**Windows PowerShell**
+
+```powershell
+.\.venv\Scripts\python.exe setup_offline_tts.py vibevoice
+.\.venv\Scripts\python.exe setup_offline_tts.py chatterbox
+```
+
+VibeVoice installation requires Git for its pinned upstream Python package.
+If Git is missing, install it using your organization's approved method.
+Python **3.11** is the tested setup. The setup creates `.venv-vibevoice` and/or
+`.venv-chatterbox` and stores assets in `models/vibevoice` and/or
+`models/chatterbox`; it does not replace the app's `.venv`. Do not install these
+optional requirements into the app environment.
+
+Plan for approximately **4-6 GB for VibeVoice** and **5-7 GB for Chatterbox**,
+plus installation caches and generated recordings/audio. Installing cloning
+is an additional download, not part of the earlier VibeVoice-only estimate.
+Have at least **15-20 GB free** when setting up both. Actual installed size
+depends on platform and package versions. Models also use several GB of memory
+when loaded, beyond their disk sizes.
+
+Restart the app after setup. Choose a backend in **Voice & pacing**, preview it,
+approve the narration, and generate audio as usual. First use loads a model;
+subsequent requests reuse a local worker until the app stops. Errors appear in
+the GUI; detailed model diagnostics also appear in the app's terminal. A request
+that exceeds ten minutes is stopped and reported as an error.
+
+#### Record your own narrator
+
+1. Select **My voice - Chatterbox (offline, experimental)**.
+2. Allow microphone access in your browser, then use **Record your voice**.
+   Microphone access works on localhost or a trusted HTTPS origin. Alternatively,
+   upload an uncompressed **16-bit mono or stereo WAV**.
+3. Record **5-30 seconds** of clean, single-speaker speech without music.
+   Supported recording rates are 16-48 kHz; maximum file size is 10 MB.
+   Chatterbox conditions on roughly the first 6-10 seconds, so put clean speech
+   at the beginning. Silent, truncated, and unsupported WAV files are rejected;
+   this validation is not speech recognition or identity verification.
+4. Confirm that it is your voice or that the speaker explicitly permitted
+   cloning. Click **Save voice reference**. If both inputs are present, the
+   microphone recording takes precedence.
+5. Preview the cloned narrator, approve the script, and generate your MP3.
+
+Recordings are saved only when you explicitly click Save, inside the active
+project's `voices` folder. They are named by content hash, so saving a different
+reference changes the audio settings and requires regeneration. References
+persist when resuming a project. Use **Delete selected voice reference** to
+remove a saved reference; clear the microphone/upload widgets to discard their
+unsaved inputs. Deletion does not remove old MP3s, downloaded copies, or backups.
+Recordings are personal data: protect the project folder and backups.
+
+Only clone your own voice or a voice you have explicit permission to use.
+Clearly disclose that shared narration is AI-generated; do not present it as
+a genuine recording or use it to impersonate someone. Similarity, accent, and
+pronunciation are not guaranteed.
+
+#### Offline operation and costs
+
+After setup, these workers load local files with Hugging Face/Transformers
+offline mode enabled, telemetry disabled, and outbound Python socket connections
+and DNS resolution blocked. Missing assets produce errors, not online fallbacks.
+Neither narration nor microphone references are sent to a speech service.
+The existing Edge option remains online only when explicitly selected.
+
+**There are no required subscriptions, API charges, per-minute fees, or
+usage royalties for local synthesis.** Hardware, electricity, disk space,
+initial downloads, and optional software updates remain ordinary local costs.
+The [VibeVoice code](https://github.com/microsoft/VibeVoice),
+[VibeVoice model](https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B),
+[Chatterbox code](https://github.com/resemble-ai/chatterbox), and
+[Chatterbox model](https://huggingface.co/ResembleAI/chatterbox) are MIT licensed;
+their dependency licenses also apply. Chatterbox includes its upstream audio
+watermarking. VibeVoice is research-oriented software; test pronunciation,
+fidelity to the script, and technical terminology before sharing a lesson.
+
+CLI examples:
+
+```bash
+.venv/bin/python deck2audio.py voice-test --backend vibevoice --vibevoice-voice Grace
+.venv/bin/python deck2audio.py tts path/to/project_narration --backend vibevoice --vibevoice-voice Emma
+.venv/bin/python deck2audio.py voice-test --backend chatterbox --voice-reference /path/to/my-consented-voice.wav
+```
+
+CLI users are responsible for obtaining permission for the reference they supply.
+Keep `--rate` at `+0%` and `--pitch` at `+0Hz` for these two engines.
+
 ### What the AI-assisted script aims to do
 
 The prompts request a personable one-person podcast style with natural "you"
@@ -340,6 +461,8 @@ rewrite content in that mode.
   and MP3 generation. The online speech service receives the text it will speak.
   The macOS fallback uses installed voices locally and works offline after setup.
   Kokoro also works offline after installing its packages and model files.
+  VibeVoice and Chatterbox work offline after their separate setup; microphone
+  recordings are processed locally by Chatterbox.
   Extraction, direct script preparation, and review work offline after setup.
 - **AI chat is your choice.** Prompts contain slide text and speaker notes.
   Pasting them into an AI service shares that content with that service.
@@ -367,6 +490,9 @@ rewrite content in that mode.
 | Online speech returns `WSServerHandshakeError: 403` | The online service rejected synthesis. Select **Kokoro voices (offline)** after its one-time setup, or **macOS voices (offline fallback)** on Mac. Preview a local voice and generate again. The app does not switch narrators automatically. |
 | The local MP3 encoder is missing | Stop the app, reinstall the updated requirements with your app's `.venv` Python, and restart it. |
 | Kokoro is not installed, or its model files are missing | Follow [Kokoro setup](#natural-offline-voices-kokoro-mac-and-windows), including both model downloads, then restart the app. |
+| VibeVoice or Chatterbox is not set up, or its worker reports a missing asset | Run the matching `setup_offline_tts.py` command above using the app's Python, then restart. Inspect the app terminal for detailed errors. |
+| No microphone recording control works | Open the app on localhost, allow browser microphone access, and check the selected input device. You can upload a consented WAV instead. |
+| The voice recording is rejected | Use 5-30 seconds of clear speech in an uncompressed 16-bit mono/stereo WAV at 16-48 kHz, at most 10 MB. |
 | A slide has no usable text or notes | Add speaker notes or text in PowerPoint, save, and upload the revised deck. Images alone are not converted into narration. |
 | Audio generation is disabled | Review and approve the full script. Changes to approved text require reapproval. |
 | A school computer blocks installation | Ask your IT staff for assistance. Do not bypass security policies. |

@@ -26,9 +26,12 @@ from typing import Callable
 
 import kokoro_tts
 import macos_tts
+import neural_tts
 import pcm_audio
 
 DEFAULT_VOICE = "en-US-AvaMultilingualNeural"
+LOCAL_ENGINES = {"macos": macos_tts, "kokoro": kokoro_tts,
+                 "vibevoice": neural_tts.vibevoice, "chatterbox": neural_tts.chatterbox}
 WORDS_PER_MINUTE = 150
 SLIDE_HEADING = re.compile(r"^\s*#{1,6}\s*Slide\s+(\d+)\b.*$", re.IGNORECASE | re.MULTILINE)
 VOICE_PREVIEW_TEXT = (
@@ -640,8 +643,8 @@ def silent_mp3(seconds: float, header: bytes) -> bytes:
 
 async def synth_chunk(text: str, voice: str, rate: str, pitch: str, retries: int = 3,
                       *, backend: str = "edge") -> bytes:
-    if backend in ("macos", "kokoro"):
-        engine = kokoro_tts if backend == "kokoro" else macos_tts
+    if backend in LOCAL_ENGINES:
+        engine = LOCAL_ENGINES[backend]
         return pcm_audio.encode_mp3(await engine.synth_pcm(text, voice, rate, pitch))
     if backend != "edge":
         raise ValueError(f"Unknown speech backend: {backend}")
@@ -692,7 +695,7 @@ async def generate_audio(proj: Path, sections: dict[int, str], voice: str, rate:
                          slide_gap: float, pause_len: float, output: Path,
                          progress: Callable[[int, int], None] | None = None,
                          *, backend: str = "edge") -> None:
-    if backend not in ("edge", "macos", "kokoro"):
+    if backend != "edge" and backend not in LOCAL_ENGINES:
         raise ValueError(f"Unknown speech backend: {backend}")
     if not sections or any(not re.sub(r"\[pause\]", "", clean_for_speech(text), flags=re.I).strip()
                            for text in sections.values()):
@@ -700,8 +703,9 @@ async def generate_audio(proj: Path, sections: dict[int, str], voice: str, rate:
     if slide_gap < 0 or pause_len < 0:
         raise ValueError("Slide gaps and pauses cannot be negative.")
     local = backend != "edge"
-    engine = kokoro_tts if backend == "kokoro" else macos_tts
+    engine = LOCAL_ENGINES.get(backend)
     if local:
+        assert engine is not None
         engine.validate_settings(voice, rate, pitch)
     adir = proj / "audio"
     adir.mkdir(exist_ok=True)
@@ -714,7 +718,7 @@ async def generate_audio(proj: Path, sections: dict[int, str], voice: str, rate:
         print(f" • Slide {num} ({len(text.split())} words)")
         for si, seg in enumerate(segments):
             if seg:
-                audio = (await engine.synth_pcm(seg, voice, rate, pitch) if local
+                audio = (await engine.synth_pcm(seg, voice, rate, pitch) if engine is not None
                          else await synth_chunk(seg, voice, rate, pitch))
                 header = header or audio[:4]
                 slide_audio.append(audio)
@@ -741,7 +745,9 @@ async def generate_audio(proj: Path, sections: dict[int, str], voice: str, rate:
 def tts(proj: Path, args) -> None:
     out = Path(args.output) if args.output else proj / f"{Path(load_state(proj).get('deck', 'presentation')).stem}_narrated.mp3"
     voice = (args.macos_voice if args.backend == "macos" else
-             args.kokoro_voice if args.backend == "kokoro" else args.voice)
+             args.kokoro_voice if args.backend == "kokoro" else
+             args.vibevoice_voice if args.backend == "vibevoice" else
+             args.voice_reference if args.backend == "chatterbox" else args.voice)
     asyncio.run(tts_async(proj, voice, args.rate, args.pitch, args.slide_gap, args.pause, out,
                           backend=args.backend))
 
@@ -761,8 +767,12 @@ def main() -> None:
     sub.add_parser("ui", help="open the local browser interface")
 
     def add_tts_opts(p):
-        p.add_argument("--backend", choices=("edge", "macos", "kokoro"), default="edge",
-                       help="speech engine: edge (online), macos or kokoro (offline)")
+        p.add_argument("--backend", choices=("edge", *LOCAL_ENGINES), default="edge",
+                       help="speech engine: edge (online); macos, kokoro, vibevoice or chatterbox (offline)")
+        p.add_argument("--vibevoice-voice", choices=tuple(neural_tts.VIBEVOICE_VOICES), default="Emma",
+                       help="VibeVoice English preset (default: Emma)")
+        p.add_argument("--voice-reference", default="",
+                       help="Chatterbox: 5-30 second WAV of your voice or a speaker who gave permission")
         p.add_argument("--kokoro-voice", choices=tuple(kokoro_tts.VOICES), default=kokoro_tts.DEFAULT_VOICE,
                        help="American-English Kokoro voice (default: af_heart)")
         p.add_argument("--macos-voice", default="",
@@ -815,7 +825,9 @@ def main() -> None:
         ], cwd=Path(__file__).resolve().parent))
     if args.cmd == "voice-test":
         voice = (args.macos_voice if args.backend == "macos" else
-                 args.kokoro_voice if args.backend == "kokoro" else args.voice)
+                 args.kokoro_voice if args.backend == "kokoro" else
+                 args.vibevoice_voice if args.backend == "vibevoice" else
+                 args.voice_reference if args.backend == "chatterbox" else args.voice)
         asyncio.run(preview_voice(voice, args.rate, args.pitch, Path(args.output), backend=args.backend))
         return
 
